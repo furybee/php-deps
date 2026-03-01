@@ -28,6 +28,24 @@
     Command: "#FB7185",
     Export: "#A3E635",
     Middleware: "#C084FC",
+    Api: "#38BDF8",
+    Integration: "#2DD4BF",
+    Library: "#A78BFA",
+    Permission: "#FACC15",
+    Helper: "#4ADE80",
+    Exception: "#EF4444",
+    Rule: "#F97316",
+    Class: "#A3A3A3",
+    Builder: "#22D3EE",
+    Cache: "#84CC16",
+    Formatter: "#E879F9",
+    Misc: "#78716C",
+    State: "#C084FC",
+    Scope: "#7DD3FC",
+    Validator: "#FB923C",
+    Resolver: "#34D399",
+    Sftp: "#9CA3AF",
+    Doctrine: "#64748B",
     Other: "#6B7280",
   };
 
@@ -52,7 +70,8 @@
   let viewMode = "classes"; // "classes" or "full"
   let activeFilters = {};
   let activeEdgeFilters = {};
-  let neighbors = new Set();
+  let hoveredNeighbors = new Set();
+  let selectedNeighbors = new Set();
 
   // ─── Load data ──────────────────────────────────────────────────────
   async function loadData() {
@@ -283,26 +302,28 @@
     // Events
     renderer.on("enterNode", ({ node }) => {
       hoveredNode = node;
-      neighbors = new Set(graph.neighbors(node));
+      hoveredNeighbors = new Set(graph.neighbors(node));
       updateTooltip(node);
       renderer.refresh({ skipIndexation: true });
     });
 
     renderer.on("leaveNode", () => {
       hoveredNode = null;
-      neighbors.clear();
+      hoveredNeighbors.clear();
       hideTooltip();
       renderer.refresh({ skipIndexation: true });
     });
 
     renderer.on("clickNode", ({ node }) => {
       selectedNode = node;
+      selectedNeighbors = new Set(graph.neighbors(node));
       showInfoPanel(node);
       renderer.refresh({ skipIndexation: true });
     });
 
     renderer.on("clickStage", () => {
       selectedNode = null;
+      selectedNeighbors.clear();
       hideInfoPanel();
       renderer.refresh({ skipIndexation: true });
     });
@@ -336,28 +357,27 @@
       return res;
     }
 
-    // Selected node highlighting
+    // Selected node: show only the node + its direct connections, hide everything else
     if (selectedNode) {
       if (node === selectedNode) {
         res.highlighted = true;
         res.zIndex = 2;
         res.forceLabel = true;
-      } else if (neighbors.size > 0 && neighbors.has(node)) {
+      } else if (selectedNeighbors.has(node)) {
         res.zIndex = 1;
         res.forceLabel = true;
-      } else if (hoveredNode === null) {
-        res.color = res.color + "33"; // fade out
-        res.label = "";
+      } else {
+        res.hidden = true;
       }
     }
 
-    // Hover highlighting
+    // Hover highlighting (only when no node is selected)
     if (hoveredNode && !selectedNode) {
       if (node === hoveredNode) {
         res.highlighted = true;
         res.zIndex = 2;
         res.forceLabel = true;
-      } else if (neighbors.has(node)) {
+      } else if (hoveredNeighbors.has(node)) {
         res.zIndex = 1;
         res.forceLabel = true;
       } else {
@@ -379,7 +399,6 @@
       return res;
     }
 
-    // Highlighting: show only edges connected to hovered/selected node
     const activeNode = selectedNode || hoveredNode;
     if (activeNode) {
       const source = graph.source(edge);
@@ -548,14 +567,12 @@
   function focusNode(nodeId) {
     if (!graph.hasNode(nodeId)) return;
     selectedNode = nodeId;
-    neighbors = new Set(graph.neighbors(nodeId));
-    const attrs = graph.getNodeAttributes(nodeId);
-    renderer.getCamera().animate(
-      { x: attrs.x, y: attrs.y, ratio: 0.15 },
-      { duration: 400 }
-    );
+    selectedNeighbors = new Set(graph.neighbors(nodeId));
     showInfoPanel(nodeId);
     renderer.refresh({ skipIndexation: true });
+
+    // Reset camera to fit all visible nodes (selected + neighbors)
+    renderer.getCamera().animatedReset({ duration: 400 });
   }
 
   // ─── View mode ──────────────────────────────────────────────────────

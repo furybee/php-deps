@@ -160,6 +160,7 @@ final class TypeResolver
         if (str_contains($fqcn, '\\UseCases\\')) return 'UseCase';
         if (str_contains($fqcn, '\\Observers\\')) return 'Observer';
         if (str_contains($fqcn, '\\Notifications\\')) return 'Notification';
+        if (str_contains($fqcn, '\\NotificationVariables\\')) return 'Notification';
         if (str_contains($fqcn, '\\Enums\\')) return 'Enum';
         if (str_contains($fqcn, '\\Dtos\\')) return 'DTO';
         if (str_contains($fqcn, '\\Contracts\\') || str_contains($fqcn, '\\Interfaces\\')) return 'Contract';
@@ -168,6 +169,25 @@ final class TypeResolver
         if (str_contains($fqcn, '\\Console\\')) return 'Command';
         if (str_contains($fqcn, '\\Exports\\')) return 'Export';
         if (str_contains($fqcn, '\\Http\\Middleware\\')) return 'Middleware';
+        if (str_contains($fqcn, '\\Http\\Integrations\\')) return 'Integration';
+        if (str_contains($fqcn, '\\Api\\')) return 'Api';
+        if (str_contains($fqcn, '\\Library\\Integration')) return 'Integration';
+        if (str_contains($fqcn, '\\Library\\')) return 'Library';
+        if (str_contains($fqcn, '\\Permissions\\')) return 'Permission';
+        if (str_contains($fqcn, '\\Helpers\\')) return 'Helper';
+        if (str_contains($fqcn, '\\Exceptions\\')) return 'Exception';
+        if (str_contains($fqcn, '\\Rules\\')) return 'Rule';
+        if (str_contains($fqcn, '\\Classes\\')) return 'Class';
+        if (str_contains($fqcn, '\\Builders\\')) return 'Builder';
+        if (str_contains($fqcn, '\\Caches\\')) return 'Cache';
+        if (str_contains($fqcn, '\\Formatter\\')) return 'Formatter';
+        if (str_contains($fqcn, '\\Miscellaneous\\')) return 'Misc';
+        if (str_contains($fqcn, '\\States\\')) return 'State';
+        if (str_contains($fqcn, '\\Scopes\\')) return 'Scope';
+        if (str_contains($fqcn, '\\Validators\\')) return 'Validator';
+        if (str_contains($fqcn, '\\Resolvers\\')) return 'Resolver';
+        if (str_contains($fqcn, '\\Sftp\\')) return 'Sftp';
+        if (str_contains($fqcn, '\\Doctrine\\')) return 'Doctrine';
 
         return 'Other';
     }
