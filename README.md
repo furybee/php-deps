@@ -43,7 +43,7 @@ git clone git@github.com:furybee/php-deps.git
 cd php-deps
 
 # Or copy into an existing Laravel project
-cp -r php-deps/ your-project/scripts/deps-graph/
+cp -r php-deps/ your-project/php-deps/
 ```
 
 ### 2. Run the analyzer
