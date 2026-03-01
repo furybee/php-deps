@@ -5,49 +5,31 @@
 (function () {
   "use strict";
 
-  // Layer colors
-  const LAYER_COLORS = {
-    Controller: "#3B82F6",
-    Service: "#10B981",
-    Model: "#F59E0B",
-    Action: "#8B5CF6",
-    Job: "#EC4899",
-    Event: "#06B6D4",
-    Listener: "#14B8A6",
-    Repository: "#6366F1",
-    Request: "#A78BFA",
-    Resource: "#34D399",
-    UseCase: "#F472B6",
-    Observer: "#FB923C",
-    Notification: "#E879F9",
-    Enum: "#FBBF24",
-    DTO: "#818CF8",
-    Contract: "#94A3B8",
-    Trait: "#67E8F9",
-    Provider: "#F87171",
-    Command: "#FB7185",
-    Export: "#A3E635",
-    Middleware: "#C084FC",
-    Api: "#38BDF8",
-    Integration: "#2DD4BF",
-    Library: "#A78BFA",
-    Permission: "#FACC15",
-    Helper: "#4ADE80",
-    Exception: "#EF4444",
-    Rule: "#F97316",
-    Class: "#A3A3A3",
-    Builder: "#22D3EE",
-    Cache: "#84CC16",
-    Formatter: "#E879F9",
-    Misc: "#78716C",
-    State: "#C084FC",
-    Scope: "#7DD3FC",
-    Validator: "#FB923C",
-    Resolver: "#34D399",
-    Sftp: "#9CA3AF",
-    Doctrine: "#64748B",
-    Other: "#6B7280",
-  };
+  // Color palette — assigned dynamically to layers in order of frequency
+  const COLOR_PALETTE = [
+    "#3B82F6", "#10B981", "#F59E0B", "#8B5CF6", "#EC4899",
+    "#06B6D4", "#14B8A6", "#6366F1", "#A78BFA", "#34D399",
+    "#F472B6", "#FB923C", "#E879F9", "#FBBF24", "#818CF8",
+    "#94A3B8", "#67E8F9", "#F87171", "#FB7185", "#A3E635",
+    "#C084FC", "#38BDF8", "#2DD4BF", "#FACC15", "#4ADE80",
+    "#EF4444", "#F97316", "#22D3EE", "#84CC16", "#7DD3FC",
+    "#A3A3A3", "#78716C", "#9CA3AF", "#64748B", "#D946EF",
+    "#0EA5E9", "#F43F5E", "#8B5CF6", "#059669", "#DC2626",
+  ];
+  const LAYER_COLORS = {};
+
+  /** Assign colors to layers based on frequency (most frequent = first color) */
+  function assignLayerColors(stats) {
+    if (!stats || !stats.layerCounts) return;
+    const sorted = Object.entries(stats.layerCounts).sort((a, b) => b[1] - a[1]);
+    sorted.forEach(([layer, _], i) => {
+      LAYER_COLORS[layer] = COLOR_PALETTE[i % COLOR_PALETTE.length];
+    });
+    // Ensure "Other" always gets a neutral gray
+    if (!LAYER_COLORS["Other"]) {
+      LAYER_COLORS["Other"] = "#6B7280";
+    }
+  }
 
   const EDGE_COLORS = {
     calls: "#4B5563",
@@ -198,6 +180,7 @@
 
   // ─── Initialize ─────────────────────────────────────────────────────
   function init() {
+    assignLayerColors(graphData.stats);
     buildGraph();
     setupRenderer();
     setupSidebar();
@@ -447,6 +430,9 @@
       }
     });
 
+    // Layer toggle all
+    setupToggleAll("layer-toggle-all", filtersEl, activeFilters, "layer");
+
     // Edge type filters
     const edgeFiltersEl = document.getElementById("edge-type-filters");
     const edgeTypes = Object.entries(s.edgeTypeCounts || {}).sort((a, b) => b[1] - a[1]);
@@ -471,11 +457,38 @@
       }
     });
 
+    // Edge toggle all
+    setupToggleAll("edge-toggle-all", edgeFiltersEl, activeEdgeFilters, "edgeType");
+
     // Sidebar toggle
     const toggle = document.getElementById("sidebar-toggle");
     const sidebar = document.getElementById("sidebar");
     toggle.addEventListener("click", () => {
       sidebar.classList.toggle("collapsed");
+    });
+  }
+
+  /**
+   * Wire up a "Select all / Deselect all" toggle button.
+   */
+  function setupToggleAll(buttonId, filtersEl, filtersState, dataAttr) {
+    const btn = document.getElementById(buttonId);
+    if (!btn) return;
+
+    btn.addEventListener("click", () => {
+      const allChecked = Object.values(filtersState).every(Boolean);
+      const newState = !allChecked;
+
+      for (const key in filtersState) {
+        filtersState[key] = newState;
+      }
+
+      filtersEl.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+        cb.checked = newState;
+      });
+
+      btn.textContent = newState ? "Deselect all" : "Select all";
+      renderer.refresh({ skipIndexation: true });
     });
   }
 

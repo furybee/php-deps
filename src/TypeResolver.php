@@ -142,53 +142,117 @@ final class TypeResolver
         return null;
     }
 
+    /** Namespace segments that are structural, not architectural layers */
+    private const SKIP_SEGMENTS = [
+        'abstracts', 'base', 'common', 'shared', 'core', 'concerns',
+        'support', 'foundation', 'internal', 'generic', 'default',
+    ];
+
+    /** Known root namespaces to skip (first segment) */
+    private const ROOT_NAMESPACES = [
+        'app', 'src', 'source', 'lib', 'module', 'modules', 'domain',
+        'infrastructure', 'presentation', 'application',
+    ];
+
+    /** Multi-segment namespace patterns that map to a specific layer */
+    private const COMPOUND_PATTERNS = [
+        'Http\\Controllers' => 'Controller',
+        'Http\\Middleware' => 'Middleware',
+        'Http\\Requests' => 'Request',
+        'Http\\Resources' => 'Resource',
+        'Http\\Integrations' => 'Integration',
+    ];
+
     /**
      * Detect the architectural layer from a FQCN.
+     *
+     * Auto-infers the layer from namespace segments instead of hardcoded patterns.
+     * Works with any PHP project (Laravel, Symfony, custom architectures).
      */
     public static function detectLayer(string $fqcn): string
     {
-        if (str_contains($fqcn, '\\Http\\Controllers\\')) return 'Controller';
-        if (str_contains($fqcn, '\\Services\\')) return 'Service';
-        if (str_contains($fqcn, '\\Models\\') || preg_match('/^App\\\\(Company|Ht|View)[A-Z]/', $fqcn)) return 'Model';
-        if (str_contains($fqcn, '\\Actions\\')) return 'Action';
-        if (str_contains($fqcn, '\\Jobs\\')) return 'Job';
-        if (str_contains($fqcn, '\\Events\\')) return 'Event';
-        if (str_contains($fqcn, '\\Listeners\\')) return 'Listener';
-        if (str_contains($fqcn, '\\Repository\\')) return 'Repository';
-        if (str_contains($fqcn, '\\Http\\Requests\\')) return 'Request';
-        if (str_contains($fqcn, '\\Http\\Resources\\')) return 'Resource';
-        if (str_contains($fqcn, '\\UseCases\\')) return 'UseCase';
-        if (str_contains($fqcn, '\\Observers\\')) return 'Observer';
-        if (str_contains($fqcn, '\\Notifications\\')) return 'Notification';
-        if (str_contains($fqcn, '\\NotificationVariables\\')) return 'Notification';
-        if (str_contains($fqcn, '\\Enums\\')) return 'Enum';
-        if (str_contains($fqcn, '\\Dtos\\')) return 'DTO';
-        if (str_contains($fqcn, '\\Contracts\\') || str_contains($fqcn, '\\Interfaces\\')) return 'Contract';
-        if (str_contains($fqcn, '\\Traits\\') || str_contains($fqcn, '\\Concerns\\')) return 'Trait';
-        if (str_contains($fqcn, '\\Providers\\')) return 'Provider';
-        if (str_contains($fqcn, '\\Console\\')) return 'Command';
-        if (str_contains($fqcn, '\\Exports\\')) return 'Export';
-        if (str_contains($fqcn, '\\Http\\Middleware\\')) return 'Middleware';
-        if (str_contains($fqcn, '\\Http\\Integrations\\')) return 'Integration';
-        if (str_contains($fqcn, '\\Api\\')) return 'Api';
-        if (str_contains($fqcn, '\\Library\\Integration')) return 'Integration';
-        if (str_contains($fqcn, '\\Library\\')) return 'Library';
-        if (str_contains($fqcn, '\\Permissions\\')) return 'Permission';
-        if (str_contains($fqcn, '\\Helpers\\')) return 'Helper';
-        if (str_contains($fqcn, '\\Exceptions\\')) return 'Exception';
-        if (str_contains($fqcn, '\\Rules\\')) return 'Rule';
-        if (str_contains($fqcn, '\\Classes\\')) return 'Class';
-        if (str_contains($fqcn, '\\Builders\\')) return 'Builder';
-        if (str_contains($fqcn, '\\Caches\\')) return 'Cache';
-        if (str_contains($fqcn, '\\Formatter\\')) return 'Formatter';
-        if (str_contains($fqcn, '\\Miscellaneous\\')) return 'Misc';
-        if (str_contains($fqcn, '\\States\\')) return 'State';
-        if (str_contains($fqcn, '\\Scopes\\')) return 'Scope';
-        if (str_contains($fqcn, '\\Validators\\')) return 'Validator';
-        if (str_contains($fqcn, '\\Resolvers\\')) return 'Resolver';
-        if (str_contains($fqcn, '\\Sftp\\')) return 'Sftp';
-        if (str_contains($fqcn, '\\Doctrine\\')) return 'Doctrine';
+        $segments = explode('\\', $fqcn);
+        array_pop($segments); // remove class name
+
+        if (empty($segments)) {
+            return 'Other';
+        }
+
+        // Check compound patterns first (Http\Controllers → Controller, etc.)
+        $namespacePath = implode('\\', $segments);
+        foreach (self::COMPOUND_PATTERNS as $pattern => $layer) {
+            if (str_contains($namespacePath, $pattern)) {
+                return $layer;
+            }
+        }
+
+        // Walk segments, skip root namespaces and structural segments
+        foreach ($segments as $segment) {
+            $lower = strtolower($segment);
+
+            // Skip root namespaces
+            if (in_array($lower, self::ROOT_NAMESPACES, true)) {
+                continue;
+            }
+
+            // Skip structural/generic segments
+            if (in_array($lower, self::SKIP_SEGMENTS, true)) {
+                continue;
+            }
+
+            // Found a meaningful segment — use it as layer
+            return self::formatLayerName($segment);
+        }
+
+        // All segments were skipped — use the last non-root one
+        for ($i = count($segments) - 1; $i >= 0; $i--) {
+            $lower = strtolower($segments[$i]);
+            if (!in_array($lower, self::ROOT_NAMESPACES, true)) {
+                return self::formatLayerName($segments[$i]);
+            }
+        }
 
         return 'Other';
+    }
+
+    /** Explicit renames for common namespace segments */
+    private const SEGMENT_ALIASES = [
+        'Console' => 'Command',
+        'Commands' => 'Command',
+        'Exceptions' => 'Exception',
+        'Helpers' => 'Helper',
+        'Interfaces' => 'Contract',
+        'Contracts' => 'Contract',
+        'Concerns' => 'Trait',
+        'Traits' => 'Trait',
+        'Miscellaneous' => 'Misc',
+        'Classes' => 'Class',
+        'DTOs' => 'DTO',
+        'Dtos' => 'DTO',
+    ];
+
+    /**
+     * Clean up a namespace segment into a readable layer name.
+     * "Controllers" → "Controller", "Services" → "Service", "DTOs" → "DTO"
+     */
+    private static function formatLayerName(string $segment): string
+    {
+        // Check explicit aliases first
+        if (isset(self::SEGMENT_ALIASES[$segment])) {
+            return self::SEGMENT_ALIASES[$segment];
+        }
+
+        // Preserve fully uppercase segments (DTO, API, etc.)
+        if (strtoupper($segment) === $segment && strlen($segment) <= 5) {
+            return $segment;
+        }
+
+        // Depluralize: remove trailing 's' (Services → Service, Jobs → Job, Rules → Rule)
+        // But keep: Bus, Dms, Status, Address, etc.
+        if (strlen($segment) > 3 && str_ends_with($segment, 's') && !str_ends_with($segment, 'ss') && !str_ends_with($segment, 'us')) {
+            $segment = substr($segment, 0, -1);
+        }
+
+        return $segment;
     }
 }
