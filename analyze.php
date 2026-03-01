@@ -4,13 +4,18 @@
 declare(strict_types=1);
 
 /**
- * Laravel Dependency Graph Analyzer
+ * PHP Dependency Graph Analyzer
  *
- * Statically analyzes PHP files in app/ to extract a full call graph:
+ * Statically analyzes PHP files to extract a full call graph:
  * classes, methods, calls, instantiations, DI, and inheritance.
  *
  * Usage:
- *   php scripts/deps-graph/analyze.php [--dir=app] [--output=scripts/deps-graph/viewer/graph.json]
+ *   php analyze.php [--dir=.] [--exclude=vendor] [--output=output/graph.json]
+ *
+ * Defaults:
+ *   --dir=. (scans entire project, vendor/ excluded by default)
+ *   --exclude=vendor,node_modules,.claude,storage,bootstrap/cache
+ *   --output=output/graph.json
  */
 
 $basePath = dirname(__DIR__, 2);
@@ -29,14 +34,17 @@ spl_autoload_register(function (string $class) {
 });
 
 // Parse CLI arguments
-$scanDir = 'app';
+$scanDirs = [];
+$excludeDirs = null;
 $outputFile = __DIR__ . '/output/graph.json';
 
-foreach ($argv as $arg) {
+foreach ($argv as $i => $arg) {
+    if ($i === 0) continue;
     if (str_starts_with($arg, '--dir=')) {
-        $scanDir = substr($arg, 6);
-    }
-    if (str_starts_with($arg, '--output=')) {
+        $scanDirs[] = substr($arg, 6);
+    } elseif (str_starts_with($arg, '--exclude=')) {
+        $excludeDirs = array_map('trim', explode(',', substr($arg, 10)));
+    } elseif (str_starts_with($arg, '--output=')) {
         $outputFile = substr($arg, 9);
         if (!str_starts_with($outputFile, '/')) {
             $outputFile = $basePath . '/' . $outputFile;
@@ -44,14 +52,26 @@ foreach ($argv as $arg) {
     }
 }
 
-fwrite(STDERR, "=== Laravel Dependency Graph Analyzer ===\n\n");
+// Defaults
+if (empty($scanDirs)) {
+    $scanDirs = ['.'];
+}
+if ($excludeDirs === null) {
+    $excludeDirs = ['vendor', 'node_modules', '.claude', 'storage', 'bootstrap/cache'];
+}
+
+$dirsLabel = implode(', ', array_map(fn($d) => $d === '.' ? '.' : "{$d}/", $scanDirs));
+$excludeLabel = empty($excludeDirs) ? '(none)' : implode(', ', $excludeDirs);
+
+fwrite(STDERR, "=== PHP Dependency Graph Analyzer ===\n\n");
 fwrite(STDERR, "Base path: {$basePath}\n");
-fwrite(STDERR, "Scan dir:  {$scanDir}/\n");
+fwrite(STDERR, "Scan:      {$dirsLabel}\n");
+fwrite(STDERR, "Exclude:   {$excludeLabel}\n");
 fwrite(STDERR, "Output:    {$outputFile}\n\n");
 
 $startTime = microtime(true);
 
-$analyzer = new DepsGraph\Analyzer($basePath, $scanDir);
+$analyzer = new DepsGraph\Analyzer($basePath, $scanDirs, $excludeDirs);
 $graph = $analyzer->analyze();
 
 $elapsed = round(microtime(true) - $startTime, 2);

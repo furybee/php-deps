@@ -11,7 +11,10 @@ use PhpParser\ErrorHandler;
 final class Analyzer
 {
     private string $basePath;
-    private string $scanDir;
+    /** @var string[] */
+    private array $scanDirs;
+    /** @var string[] */
+    private array $excludeDirs;
     private \PhpParser\Parser $parser;
     private TypeResolver $typeResolver;
 
@@ -21,10 +24,15 @@ final class Analyzer
     /** @var array<string, array{namespace: string, useMap: array}> file context from first pass */
     private array $fileContexts = [];
 
-    public function __construct(string $basePath, string $scanDir = 'app')
+    /**
+     * @param string|string[] $scanDirs
+     * @param string[] $excludeDirs
+     */
+    public function __construct(string $basePath, string|array $scanDirs = ['app'], array $excludeDirs = [])
     {
         $this->basePath = rtrim($basePath, '/');
-        $this->scanDir = $scanDir;
+        $this->scanDirs = is_array($scanDirs) ? $scanDirs : [$scanDirs];
+        $this->excludeDirs = $excludeDirs;
         $this->parser = (new ParserFactory())->createForHostVersion();
         $this->typeResolver = new TypeResolver();
     }
@@ -37,7 +45,7 @@ final class Analyzer
         $files = $this->findPhpFiles();
         $totalFiles = count($files);
 
-        fwrite(STDERR, "Found {$totalFiles} PHP files in {$this->scanDir}/\n");
+        fwrite(STDERR, "Found {$totalFiles} PHP files\n");
 
         // First pass: extract class metadata
         fwrite(STDERR, "Pass 1/2: Extracting classes and methods...\n");
@@ -156,21 +164,49 @@ final class Analyzer
 
     private function findPhpFiles(): array
     {
-        $dir = $this->basePath . '/' . $this->scanDir;
-        $iterator = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator($dir, \FilesystemIterator::SKIP_DOTS),
-            \RecursiveIteratorIterator::LEAVES_ONLY
+        $files = [];
+        $excludeAbsolute = array_map(
+            fn(string $d) => $this->basePath . '/' . trim($d, '/'),
+            $this->excludeDirs
         );
 
-        $files = [];
-        foreach ($iterator as $file) {
-            if ($file->getExtension() === 'php') {
-                $files[] = $file->getPathname();
+        foreach ($this->scanDirs as $scanDir) {
+            $dir = $scanDir === '.'
+                ? $this->basePath
+                : $this->basePath . '/' . $scanDir;
+
+            if (!is_dir($dir)) {
+                fwrite(STDERR, "  [WARN] Directory not found: {$dir}\n");
+                continue;
+            }
+
+            $iterator = new \RecursiveIteratorIterator(
+                new \RecursiveCallbackFilterIterator(
+                    new \RecursiveDirectoryIterator($dir, \FilesystemIterator::SKIP_DOTS),
+                    function (\SplFileInfo $current, string $key, \RecursiveDirectoryIterator $it) use ($excludeAbsolute) {
+                        if ($current->isDir()) {
+                            $path = $current->getPathname();
+                            foreach ($excludeAbsolute as $excluded) {
+                                if ($path === $excluded || str_starts_with($path, $excluded . '/')) {
+                                    return false;
+                                }
+                            }
+                        }
+                        return true;
+                    }
+                ),
+                \RecursiveIteratorIterator::LEAVES_ONLY
+            );
+
+            foreach ($iterator as $file) {
+                if ($file->getExtension() === 'php') {
+                    $files[] = $file->getPathname();
+                }
             }
         }
 
         sort($files);
-        return $files;
+        return array_unique($files);
     }
 
     private function relativePath(string $path): string

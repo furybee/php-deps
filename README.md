@@ -67,25 +67,29 @@ Load `output/graph.json` via the file picker (drag & drop supported).
 ## CLI Options
 
 ```bash
-php analyze.php [--dir=app] [--output=output/graph.json]
+php analyze.php [--dir=app] [--dir=app-modules] [--exclude=vendor] [--output=output/graph.json]
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--dir` | `app` | Directory to scan (relative to project root) |
+| `--dir` | `.` (entire project) | Directories to scan (repeatable, relative to project root) |
+| `--exclude` | `vendor,node_modules,.claude,storage,bootstrap/cache` | Comma-separated directories to exclude |
 | `--output` | `output/graph.json` | Output path for the JSON graph |
 
 ### Examples
 
 ```bash
-# Scan a specific directory
-php analyze.php --dir=src
+# Scan the entire project (vendor/ excluded by default)
+php analyze.php --dir=.
+
+# Scan multiple directories
+php analyze.php --dir=app --dir=app-modules
+
+# Scan with custom exclusions
+php analyze.php --dir=. --exclude=vendor,node_modules,tests
 
 # Custom output path
 php analyze.php --output=/tmp/graph.json
-
-# Scan modules
-php analyze.php --dir=app-modules
 ```
 
 ## What It Detects
