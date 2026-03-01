@@ -58,7 +58,9 @@
   let fa2Running = false;
   let hoveredNode = null;
   let selectedNode = null;
-  let viewMode = "classes"; // "classes" or "full"
+  let viewMode = "namespaces"; // "namespaces", "classes", or "full"
+  let namespacePath = []; // drill-down path for namespace mode
+  let commonPrefix = []; // auto-detected root namespace segments to skip
   let activeFilters = {};
   let activeEdgeFilters = {};
   let activeClassTypeFilters = {};
@@ -191,6 +193,7 @@
   // ─── Initialize ─────────────────────────────────────────────────────
   function init() {
     assignLayerColors(graphData.stats);
+    commonPrefix = detectCommonPrefix();
     buildGraph();
     setupRenderer();
     setupSidebar();
@@ -198,18 +201,209 @@
     setupViewMode();
     setupLayoutControls();
     setupInfoPanel();
+    updateBreadcrumb();
 
     document.getElementById("loading").classList.add("hidden");
 
     // Auto-start layout
     startLayout();
-    setTimeout(() => stopLayout(), 5000);
+    setTimeout(() => stopLayout(), viewMode === "namespaces" ? 3000 : 5000);
+  }
+
+  // ─── Namespace helpers ─────────────────────────────────────────────
+  const ROOT_NAMESPACES = [
+    "app", "src", "source", "lib", "module", "modules", "domain",
+    "infrastructure", "presentation", "application",
+  ];
+
+  /** Detect common root prefix to skip (e.g. "App") */
+  function detectCommonPrefix() {
+    const classNodes = graphData.nodes.filter((n) => n.type === "class" && n.namespace);
+    if (classNodes.length === 0) return [];
+
+    // Split all namespaces into segments
+    const allSegments = classNodes.map((n) => n.namespace.split("\\"));
+    const first = allSegments[0];
+    const prefix = [];
+
+    for (let i = 0; i < first.length; i++) {
+      const seg = first[i];
+      if (allSegments.every((s) => s[i] === seg) && ROOT_NAMESPACES.includes(seg.toLowerCase())) {
+        prefix.push(seg);
+      } else {
+        break;
+      }
+    }
+
+    return prefix;
+  }
+
+  /**
+   * Get the namespace group key for a class node at the current drill-down depth.
+   * Returns the next segment after commonPrefix + namespacePath, or null if not in scope.
+   */
+  function getNamespaceGroup(namespace) {
+    if (!namespace) return null;
+    const segments = namespace.split("\\");
+    const prefixLen = commonPrefix.length;
+    const pathLen = namespacePath.length;
+    const depth = prefixLen + pathLen;
+
+    // Check that this namespace matches the current path
+    for (let i = 0; i < prefixLen; i++) {
+      if (segments[i] !== commonPrefix[i]) return null;
+    }
+    for (let i = 0; i < pathLen; i++) {
+      if (segments[prefixLen + i] !== namespacePath[i]) return null;
+    }
+
+    // Return the next segment (the group at current depth)
+    if (segments.length > depth) {
+      return segments[depth];
+    }
+
+    // Class is directly in the current namespace (no sub-segment)
+    return "(classes)";
+  }
+
+  /** Get full namespace prefix for a group segment */
+  function getGroupNamespace(segment) {
+    const parts = [...commonPrefix, ...namespacePath, segment];
+    return parts.join("\\");
   }
 
   // ─── Build Graphology graph ─────────────────────────────────────────
   function buildGraph() {
     graph = new graphology.Graph({ multi: false, type: "directed" });
 
+    if (viewMode === "namespaces") {
+      buildNamespaceGraph();
+    } else {
+      buildClassGraph();
+    }
+  }
+
+  function buildNamespaceGraph() {
+    if (commonPrefix.length === 0) {
+      commonPrefix = detectCommonPrefix();
+    }
+
+    const classNodes = graphData.nodes.filter((n) => n.type === "class");
+
+    // Group classes by their namespace segment at current depth
+    const groups = new Map(); // segment → { classes: [], layers: {} }
+
+    classNodes.forEach((node) => {
+      const group = getNamespaceGroup(node.namespace || "");
+      if (group === null) return;
+
+      if (!groups.has(group)) {
+        groups.set(group, { classes: [], layers: {} });
+      }
+      const g = groups.get(group);
+      g.classes.push(node);
+      g.layers[node.layer] = (g.layers[node.layer] || 0) + 1;
+    });
+
+    // Check which groups have sub-namespaces (children beyond current depth)
+    const prefixLen = commonPrefix.length;
+    const pathLen = namespacePath.length;
+    const depth = prefixLen + pathLen;
+
+    groups.forEach((data, segment) => {
+      if (segment === "(classes)") {
+        data.hasChildren = false;
+        return;
+      }
+      // Check if any class has deeper segments
+      data.hasChildren = data.classes.some((n) => {
+        const segs = (n.namespace || "").split("\\");
+        return segs.length > depth + 1;
+      });
+    });
+
+    // Create namespace nodes
+    groups.forEach((data, segment) => {
+      const dominantLayer = Object.entries(data.layers).sort((a, b) => b[1] - a[1])[0];
+      const color = dominantLayer ? (LAYER_COLORS[dominantLayer[0]] || LAYER_COLORS.Other) : "#6B7280";
+      const count = data.classes.length;
+      const label = segment === "(classes)" ? `${namespacePath[namespacePath.length - 1] || "Root"} (${count})` : `${segment} (${count})`;
+
+      const nodeId = segment === "(classes)" ? "__direct_classes__" : getGroupNamespace(segment);
+
+      graph.addNode(nodeId, {
+        x: Math.random() * 100,
+        y: Math.random() * 100,
+        size: Math.max(5, Math.min(25, Math.sqrt(count) * 3)),
+        color: color,
+        label: label,
+        nodeType: "namespace",
+        layer: dominantLayer ? dominantLayer[0] : "Other",
+        namespace: nodeId,
+        classType: "",
+        methods: [],
+        methodCount: 0,
+        forceLabel: true,
+        // Custom namespace attrs
+        isNamespaceNode: true,
+        hasChildren: data.hasChildren,
+        segment: segment,
+        classCount: count,
+        layerBreakdown: data.layers,
+        containedClasses: data.classes.map((n) => n.id),
+      });
+    });
+
+    // Build a class→group lookup
+    const classToGroup = {};
+    groups.forEach((data, segment) => {
+      const nodeId = segment === "(classes)" ? "__direct_classes__" : getGroupNamespace(segment);
+      data.classes.forEach((n) => {
+        classToGroup[n.id] = nodeId;
+      });
+    });
+
+    // Aggregate edges between groups
+    const edgeCounts = {}; // "source→target" → count
+
+    graphData.edges.forEach((edge) => {
+      let source = edge.source;
+      let target = edge.target;
+
+      // Collapse to class level
+      if (source.includes("::")) source = source.split("::")[0];
+      if (target.includes("::")) target = target.split("::")[0];
+
+      const sourceGroup = classToGroup[source];
+      const targetGroup = classToGroup[target];
+
+      if (!sourceGroup || !targetGroup || sourceGroup === targetGroup) return;
+
+      const key = `${sourceGroup}→${targetGroup}`;
+      edgeCounts[key] = (edgeCounts[key] || 0) + 1;
+    });
+
+    // Add aggregated edges
+    Object.entries(edgeCounts).forEach(([key, count]) => {
+      const [source, target] = key.split("→");
+      if (!graph.hasNode(source) || !graph.hasNode(target)) return;
+
+      try {
+        graph.addEdgeWithKey(key, source, target, {
+          color: "#4B556388",
+          size: Math.max(0.5, Math.min(5, Math.sqrt(count) * 0.8)),
+          type: "arrow",
+          edgeType: "aggregated",
+          edgeCount: count,
+          label: String(count),
+        });
+      } catch (e) {
+        // skip
+      }
+    });
+  }
+
+  function buildClassGraph() {
     const nodesById = {};
     graphData.nodes.forEach((n) => (nodesById[n.id] = n));
 
@@ -275,16 +469,16 @@
 
     renderer = new Sigma(graph, container, {
       renderLabels: true,
-      renderEdgeLabels: false,
+      renderEdgeLabels: viewMode === "namespaces",
       defaultNodeColor: "#6B7280",
       defaultEdgeColor: "#2D333B",
       labelFont: "Inter, -apple-system, sans-serif",
-      labelSize: 12,
+      labelSize: viewMode === "namespaces" ? 14 : 12,
       labelWeight: "500",
       labelColor: { color: "#c9d1d9" },
-      labelDensity: 0.15,
-      labelGridCellSize: 100,
-      labelRenderedSizeThreshold: 6,
+      labelDensity: viewMode === "namespaces" ? 1 : 0.15,
+      labelGridCellSize: viewMode === "namespaces" ? 50 : 100,
+      labelRenderedSizeThreshold: viewMode === "namespaces" ? 0 : 6,
       edgeReducer: reduceEdge,
       nodeReducer: reduceNode,
       zIndex: true,
@@ -308,6 +502,16 @@
     });
 
     renderer.on("clickNode", ({ node }) => {
+      // Namespace mode: drill-down on click
+      if (viewMode === "namespaces") {
+        const attrs = graph.getNodeAttributes(node);
+        if (attrs.isNamespaceNode && attrs.hasChildren) {
+          namespacePath.push(attrs.segment);
+          rebuildNamespaceView();
+          return;
+        }
+      }
+
       selectedNode = node;
       selectedNeighbors = new Set(graph.neighbors(node));
       showInfoPanel(node);
@@ -343,6 +547,11 @@
   // ─── Node reducer ──────────────────────────────────────────────────
   function reduceNode(node, data) {
     const res = { ...data };
+
+    // In namespace mode, always force labels visible
+    if (viewMode === "namespaces" && data.isNamespaceNode) {
+      res.forceLabel = true;
+    }
 
     // Layer filter
     if (activeFilters[data.layer] === false) {
@@ -645,12 +854,70 @@
         btn.classList.add("active");
         viewMode = mode;
 
+        if (mode === "namespaces") {
+          namespacePath = [];
+        }
+
         // Rebuild graph
         if (renderer) renderer.kill();
+        selectedNode = null;
+        selectedNeighbors.clear();
+        hideInfoPanel();
         buildGraph();
         setupRenderer();
+        updateBreadcrumb();
         startLayout();
-        setTimeout(() => stopLayout(), 5000);
+        setTimeout(() => stopLayout(), mode === "namespaces" ? 3000 : 5000);
+      });
+    });
+  }
+
+  // ─── Namespace navigation ─────────────────────────────────────────
+  function rebuildNamespaceView() {
+    if (renderer) renderer.kill();
+    selectedNode = null;
+    selectedNeighbors.clear();
+    hoveredNode = null;
+    hoveredNeighbors.clear();
+    hideInfoPanel();
+    buildGraph();
+    setupRenderer();
+    updateBreadcrumb();
+    startLayout();
+    setTimeout(() => stopLayout(), 3000);
+    // Force label refresh after layout settles
+    setTimeout(() => renderer && renderer.refresh(), 100);
+  }
+
+  function updateBreadcrumb() {
+    const el = document.getElementById("breadcrumb");
+    if (viewMode !== "namespaces") {
+      el.style.display = "none";
+      return;
+    }
+    el.style.display = "flex";
+
+    const rootLabel = commonPrefix.length > 0 ? commonPrefix.join("\\") : "Root";
+    let html = `<span class="breadcrumb-item" data-depth="-1">${rootLabel}</span>`;
+    namespacePath.forEach((segment, i) => {
+      html += `<span class="breadcrumb-sep">›</span>`;
+      html += `<span class="breadcrumb-item" data-depth="${i}">${segment}</span>`;
+    });
+    el.innerHTML = html;
+
+    el.querySelectorAll(".breadcrumb-item").forEach((item) => {
+      item.addEventListener("click", () => {
+        const depth = parseInt(item.dataset.depth);
+        if (depth < 0) {
+          namespacePath = [];
+        } else {
+          namespacePath = namespacePath.slice(0, depth + 1);
+        }
+        // Don't rebuild if clicking the last (current) item
+        const isLast = item === el.querySelector(".breadcrumb-item:last-child");
+        if (!isLast || namespacePath.length === 0) {
+          rebuildNamespaceView();
+        }
       });
     });
   }
@@ -662,7 +929,7 @@
     const FA2 = graphologyLayoutForceAtlas2;
     const settings = FA2.inferSettings(graph);
     settings.gravity = 1;
-    settings.scalingRatio = viewMode === "full" ? 5 : 10;
+    settings.scalingRatio = viewMode === "full" ? 5 : viewMode === "namespaces" ? 20 : 10;
     settings.barnesHutOptimize = true;
     settings.barnesHutTheta = 0.5;
     settings.slowDown = 5;
@@ -709,17 +976,39 @@
     tooltip.querySelector(".tooltip-namespace").textContent = attrs.namespace || nodeId;
 
     const layerEl = tooltip.querySelector(".tooltip-layer");
-    layerEl.textContent = attrs.layer;
-    layerEl.style.background = color + "33";
-    layerEl.style.color = color;
 
-    const methodsEl = tooltip.querySelector(".tooltip-methods");
-    if (attrs.nodeType === "class" && attrs.methods && attrs.methods.length > 0) {
-      const displayed = attrs.methods.slice(0, 10);
-      const more = attrs.methods.length > 10 ? `<li style="color:#484f58">...+${attrs.methods.length - 10} more</li>` : "";
-      methodsEl.innerHTML = `Methods (${attrs.methods.length}):<ul>${displayed.map((m) => `<li>${m}()</li>`).join("")}${more}</ul>`;
+    if (attrs.isNamespaceNode) {
+      // Namespace node tooltip
+      layerEl.textContent = `${attrs.classCount} classes`;
+      layerEl.style.background = color + "33";
+      layerEl.style.color = color;
+
+      const methodsEl = tooltip.querySelector(".tooltip-methods");
+      const breakdown = attrs.layerBreakdown || {};
+      const sorted = Object.entries(breakdown).sort((a, b) => b[1] - a[1]).slice(0, 8);
+      if (sorted.length > 0) {
+        methodsEl.innerHTML = `Layers:<ul>${sorted.map(([l, c]) => `<li>${l}: ${c}</li>`).join("")}</ul>`;
+      } else {
+        methodsEl.innerHTML = "";
+      }
+
+      if (attrs.hasChildren) {
+        methodsEl.innerHTML += `<div style="margin-top:6px;color:#58a6ff;font-size:11px">Click to explore</div>`;
+      }
     } else {
-      methodsEl.innerHTML = "";
+      // Class/method node tooltip
+      layerEl.textContent = attrs.layer;
+      layerEl.style.background = color + "33";
+      layerEl.style.color = color;
+
+      const methodsEl = tooltip.querySelector(".tooltip-methods");
+      if (attrs.nodeType === "class" && attrs.methods && attrs.methods.length > 0) {
+        const displayed = attrs.methods.slice(0, 10);
+        const more = attrs.methods.length > 10 ? `<li style="color:#484f58">...+${attrs.methods.length - 10} more</li>` : "";
+        methodsEl.innerHTML = `Methods (${attrs.methods.length}):<ul>${displayed.map((m) => `<li>${m}()</li>`).join("")}${more}</ul>`;
+      } else {
+        methodsEl.innerHTML = "";
+      }
     }
 
     tooltip.style.display = "block";
@@ -738,81 +1027,173 @@
     panel.querySelector(".panel-title").innerHTML =
       `<span style="color:${color}">${attrs.label}</span>`;
 
-    // Build body
     const body = panel.querySelector(".panel-body");
-    let html = `
-      <div style="font-size:11px;color:#8b949e;margin-bottom:8px;font-family:monospace;word-break:break-all">${nodeId}</div>
-      <div style="margin-bottom:12px">
-        <span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:600;text-transform:uppercase;background:${color}33;color:${color}">${attrs.layer}</span>
-        ${attrs.classType ? `<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;background:#21262d;color:#8b949e;margin-left:4px">${attrs.classType}</span>` : ""}
-      </div>
-    `;
+    let html = "";
 
-    // Connections
-    const inEdges = graph.inEdges(nodeId);
-    const outEdges = graph.outEdges(nodeId);
+    if (attrs.isNamespaceNode) {
+      // Namespace node info panel
+      html += `
+        <div style="font-size:11px;color:#8b949e;margin-bottom:8px;font-family:monospace;word-break:break-all">${attrs.namespace}</div>
+        <div style="margin-bottom:12px">
+          <span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:600;background:${color}33;color:${color}">${attrs.classCount} classes</span>
+        </div>
+      `;
 
-    if (outEdges.length > 0) {
-      html += `<div class="connections-section"><h4>Depends on (${outEdges.length})</h4>`;
-      const targets = {};
-      outEdges.forEach((e) => {
-        const target = graph.target(e);
-        const edgeType = graph.getEdgeAttribute(e, "edgeType");
-        if (!targets[target]) targets[target] = [];
-        targets[target].push(edgeType);
-      });
-      Object.entries(targets)
-        .slice(0, 30)
-        .forEach(([target, types]) => {
+      // Layer breakdown
+      const breakdown = attrs.layerBreakdown || {};
+      const sorted = Object.entries(breakdown).sort((a, b) => b[1] - a[1]);
+      if (sorted.length > 0) {
+        html += `<div class="connections-section"><h4>Layer breakdown</h4>`;
+        sorted.forEach(([layer, count]) => {
+          const lColor = LAYER_COLORS[layer] || LAYER_COLORS.Other;
+          html += `<div class="connection-item" style="cursor:default">
+            <span class="filter-dot" style="background:${lColor};width:6px;height:6px"></span>
+            ${layer}
+            <span class="filter-count">${count}</span>
+          </div>`;
+        });
+        html += `</div>`;
+      }
+
+      // Contained classes (top 30)
+      const contained = attrs.containedClasses || [];
+      if (contained.length > 0) {
+        html += `<div class="connections-section"><h4>Classes (${contained.length})</h4>`;
+        contained.slice(0, 30).forEach((classId) => {
+          const classNode = graphData.nodes.find((n) => n.id === classId);
+          if (!classNode) return;
+          const cColor = LAYER_COLORS[classNode.layer] || LAYER_COLORS.Other;
+          html += `<div class="connection-item" data-id="${classId}">
+            <span class="filter-dot" style="background:${cColor};width:6px;height:6px"></span>
+            ${classNode.label}
+            <span class="edge-type">${classNode.layer}</span>
+          </div>`;
+        });
+        if (contained.length > 30) {
+          html += `<div style="color:#484f58;font-size:11px;padding:4px 0">...+${contained.length - 30} more</div>`;
+        }
+        html += `</div>`;
+      }
+
+      // Dependencies
+      const outEdges = graph.outEdges(nodeId);
+      const inEdges = graph.inEdges(nodeId);
+
+      if (outEdges.length > 0) {
+        html += `<div class="connections-section"><h4>Depends on</h4>`;
+        outEdges.forEach((e) => {
+          const target = graph.target(e);
           const tAttrs = graph.getNodeAttributes(target);
           const tColor = LAYER_COLORS[tAttrs.layer] || LAYER_COLORS.Other;
-          const uniqueTypes = [...new Set(types)];
+          const count = graph.getEdgeAttribute(e, "edgeCount") || 1;
           html += `<div class="connection-item" data-id="${target}">
             <span class="filter-dot" style="background:${tColor};width:6px;height:6px"></span>
             ${tAttrs.label}
-            ${uniqueTypes.map((t) => `<span class="edge-type">${t}</span>`).join("")}
+            <span class="edge-type">${count} deps</span>
           </div>`;
         });
-      if (Object.keys(targets).length > 30) {
-        html += `<div style="color:#484f58;font-size:11px;padding:4px 0">...+${Object.keys(targets).length - 30} more</div>`;
+        html += `</div>`;
       }
-      html += `</div>`;
-    }
 
-    if (inEdges.length > 0) {
-      html += `<div class="connections-section"><h4>Used by (${inEdges.length})</h4>`;
-      const sources = {};
-      inEdges.forEach((e) => {
-        const source = graph.source(e);
-        const edgeType = graph.getEdgeAttribute(e, "edgeType");
-        if (!sources[source]) sources[source] = [];
-        sources[source].push(edgeType);
-      });
-      Object.entries(sources)
-        .slice(0, 30)
-        .forEach(([source, types]) => {
+      if (inEdges.length > 0) {
+        html += `<div class="connections-section"><h4>Used by</h4>`;
+        inEdges.forEach((e) => {
+          const source = graph.source(e);
           const sAttrs = graph.getNodeAttributes(source);
           const sColor = LAYER_COLORS[sAttrs.layer] || LAYER_COLORS.Other;
-          const uniqueTypes = [...new Set(types)];
+          const count = graph.getEdgeAttribute(e, "edgeCount") || 1;
           html += `<div class="connection-item" data-id="${source}">
             <span class="filter-dot" style="background:${sColor};width:6px;height:6px"></span>
             ${sAttrs.label}
-            ${uniqueTypes.map((t) => `<span class="edge-type">${t}</span>`).join("")}
+            <span class="edge-type">${count} deps</span>
           </div>`;
         });
-      if (Object.keys(sources).length > 30) {
-        html += `<div style="color:#484f58;font-size:11px;padding:4px 0">...+${Object.keys(sources).length - 30} more</div>`;
+        html += `</div>`;
       }
-      html += `</div>`;
+    } else {
+      // Class/method node info panel (existing logic)
+      html += `
+        <div style="font-size:11px;color:#8b949e;margin-bottom:8px;font-family:monospace;word-break:break-all">${nodeId}</div>
+        <div style="margin-bottom:12px">
+          <span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:600;text-transform:uppercase;background:${color}33;color:${color}">${attrs.layer}</span>
+          ${attrs.classType ? `<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;background:#21262d;color:#8b949e;margin-left:4px">${attrs.classType}</span>` : ""}
+        </div>
+      `;
+
+      const inEdges = graph.inEdges(nodeId);
+      const outEdges = graph.outEdges(nodeId);
+
+      if (outEdges.length > 0) {
+        html += `<div class="connections-section"><h4>Depends on (${outEdges.length})</h4>`;
+        const targets = {};
+        outEdges.forEach((e) => {
+          const target = graph.target(e);
+          const edgeType = graph.getEdgeAttribute(e, "edgeType");
+          if (!targets[target]) targets[target] = [];
+          targets[target].push(edgeType);
+        });
+        Object.entries(targets)
+          .slice(0, 30)
+          .forEach(([target, types]) => {
+            const tAttrs = graph.getNodeAttributes(target);
+            const tColor = LAYER_COLORS[tAttrs.layer] || LAYER_COLORS.Other;
+            const uniqueTypes = [...new Set(types)];
+            html += `<div class="connection-item" data-id="${target}">
+              <span class="filter-dot" style="background:${tColor};width:6px;height:6px"></span>
+              ${tAttrs.label}
+              ${uniqueTypes.map((t) => `<span class="edge-type">${t}</span>`).join("")}
+            </div>`;
+          });
+        if (Object.keys(targets).length > 30) {
+          html += `<div style="color:#484f58;font-size:11px;padding:4px 0">...+${Object.keys(targets).length - 30} more</div>`;
+        }
+        html += `</div>`;
+      }
+
+      if (inEdges.length > 0) {
+        html += `<div class="connections-section"><h4>Used by (${inEdges.length})</h4>`;
+        const sources = {};
+        inEdges.forEach((e) => {
+          const source = graph.source(e);
+          const edgeType = graph.getEdgeAttribute(e, "edgeType");
+          if (!sources[source]) sources[source] = [];
+          sources[source].push(edgeType);
+        });
+        Object.entries(sources)
+          .slice(0, 30)
+          .forEach(([source, types]) => {
+            const sAttrs = graph.getNodeAttributes(source);
+            const sColor = LAYER_COLORS[sAttrs.layer] || LAYER_COLORS.Other;
+            const uniqueTypes = [...new Set(types)];
+            html += `<div class="connection-item" data-id="${source}">
+              <span class="filter-dot" style="background:${sColor};width:6px;height:6px"></span>
+              ${sAttrs.label}
+              ${uniqueTypes.map((t) => `<span class="edge-type">${t}</span>`).join("")}
+            </div>`;
+          });
+        if (Object.keys(sources).length > 30) {
+          html += `<div style="color:#484f58;font-size:11px;padding:4px 0">...+${Object.keys(sources).length - 30} more</div>`;
+        }
+        html += `</div>`;
+      }
     }
 
     body.innerHTML = html;
     panel.classList.add("visible");
 
     // Click on connections to navigate
-    body.querySelectorAll(".connection-item").forEach((item) => {
+    body.querySelectorAll(".connection-item[data-id]").forEach((item) => {
       item.addEventListener("click", () => {
-        focusNode(item.dataset.id);
+        const targetId = item.dataset.id;
+        if (viewMode === "namespaces" && graph.hasNode(targetId)) {
+          // In namespace mode, clicking a connection selects that namespace node
+          selectedNode = targetId;
+          selectedNeighbors = new Set(graph.neighbors(targetId));
+          showInfoPanel(targetId);
+          renderer.refresh({ skipIndexation: true });
+        } else {
+          focusNode(targetId);
+        }
       });
     });
   }

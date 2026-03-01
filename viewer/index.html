@@ -32,7 +32,8 @@
     <div id="view-mode">
       <label>View</label>
       <div class="view-buttons">
-        <button class="view-btn active" data-mode="classes">Classes</button>
+        <button class="view-btn active" data-mode="namespaces">Namespaces</button>
+        <button class="view-btn" data-mode="classes">Classes</button>
         <button class="view-btn" data-mode="full">Full Graph</button>
       </div>
     </div>
@@ -63,6 +64,9 @@
   </div>
 
   <button id="sidebar-toggle">&#9776;</button>
+
+  <!-- Breadcrumb for namespace navigation -->
+  <div id="breadcrumb"></div>
 
   <!-- Tooltip -->
   <div id="tooltip">
