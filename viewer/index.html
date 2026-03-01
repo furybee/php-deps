@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Laravel Dependency Graph</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- Loading screen -->
+  <div id="loading">
+    <div class="spinner"></div>
+    <div class="loading-text">Loading graph...</div>
+  </div>
+
+  <!-- Graph container -->
+  <div id="sigma-container"></div>
+
+  <!-- Sidebar -->
+  <div id="sidebar">
+    <div class="sidebar-header">
+      <h1>Dependency Graph</h1>
+      <div class="stats" id="stats-text"></div>
+    </div>
+
+    <div id="search-container">
+      <input type="text" id="search-input" placeholder="Search classes..." autocomplete="off">
+      <div id="search-results"></div>
+    </div>
+
+    <div id="view-mode">
+      <label>View</label>
+      <div class="view-buttons">
+        <button class="view-btn active" data-mode="classes">Classes</button>
+        <button class="view-btn" data-mode="full">Full Graph</button>
+      </div>
+    </div>
+
+    <div id="filters">
+      <label>Layers</label>
+      <div id="layer-filters"></div>
+    </div>
+
+    <div id="edge-filters">
+      <label>Edge Types</label>
+      <div id="edge-type-filters"></div>
+    </div>
+  </div>
+
+  <button id="sidebar-toggle">&#9776;</button>
+
+  <!-- Tooltip -->
+  <div id="tooltip">
+    <div class="tooltip-title"></div>
+    <div class="tooltip-namespace"></div>
+    <div class="tooltip-layer"></div>
+    <div class="tooltip-methods"></div>
+  </div>
+
+  <!-- Info panel -->
+  <div id="info-panel">
+    <div class="panel-header">
+      <span class="panel-title"></span>
+      <button class="panel-close">&times;</button>
+    </div>
+    <div class="panel-body"></div>
+  </div>
+
+  <!-- Layout controls -->
+  <div id="layout-controls">
+    <button id="btn-layout" title="Start/stop force layout">Force Layout</button>
+    <button id="btn-reset-zoom" title="Reset zoom">Reset Zoom</button>
+  </div>
+
+  <!-- Libraries via CDN (UMD builds) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/graphology/0.25.4/graphology.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/graphology-layout-forceatlas2@0.10.1/build/graphology-layout-forceatlas2.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/sigma.js/2.4.0/sigma.min.js"></script>
+
+  <script src="app.js"></script>
+</body>
+</html>
