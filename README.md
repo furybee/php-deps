@@ -9,11 +9,6 @@
 [![Laravel](https://img.shields.io/badge/Laravel-Compatible-FF2D20.svg)](https://laravel.com)
 [![Sigma.js](https://img.shields.io/badge/Sigma.js-v2-E8590C.svg)](https://www.sigmajs.org)
 
-<br>
-
-<img src="https://raw.githubusercontent.com/furybee/php-deps/main/.github/preview.png" alt="PHP Deps Preview" width="720">
-
-<br>
 
 *Analyze your codebase in seconds. Explore thousands of classes interactively.*
 
