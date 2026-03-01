@@ -30,21 +30,20 @@
 ## Requirements
 
 - **PHP 8.1+**
-- **nikic/php-parser** (typically available via PHPStan, Larastan, or Laravel IDE Helper)
 - A modern browser (Chrome, Firefox, Safari, Edge)
 
 ## Quick Start
 
-### 1. Clone or copy into your project
+### 1. Clone and install
 
 ```bash
-# As a standalone tool
 git clone git@github.com:furybee/php-deps.git
 cd php-deps
-
-# Or copy into an existing Laravel project
-cp -r php-deps/ your-project/php-deps/
+composer install
 ```
+
+> **Already in a PHP project with nikic/php-parser?** (e.g. via PHPStan, Larastan)
+> Skip `composer install` — the tool will use your project's `vendor/` automatically.
 
 ### 2. Run the analyzer
 
@@ -52,7 +51,8 @@ cp -r php-deps/ your-project/php-deps/
 php analyze.php
 ```
 
-By default, it scans `app/` and outputs to `output/graph.json`.
+By default, it scans the entire project (`.`) and outputs to `output/graph.json`.
+Directories like `vendor/`, `node_modules/`, `storage/` are excluded automatically.
 
 ### 3. Open the viewer
 
@@ -135,21 +135,24 @@ Classes are categorized by namespace:
 
 | Feature | Description |
 |---------|-------------|
+| **Namespaces mode** | Browse by folder/namespace, click to drill-down, breadcrumb navigation |
+| **Classes mode** | All classes as nodes with aggregated edges |
+| **Full Graph mode** | Classes + methods with detailed call edges |
 | **Search** | Type `/` to search, autocomplete class names |
 | **Layer filter** | Toggle visibility by layer (Controller, Service, Model...) |
+| **Type filter** | Toggle by PHP type (Class, Abstract, Interface, Trait, Enum) |
 | **Edge filter** | Toggle edge types (calls, extends, implements...) |
 | **Click** | Select a node to see all its connections in the info panel |
 | **Hover** | Highlight direct neighbors, fade everything else |
-| **Double-click** | Zoom into a node |
 | **Force Layout** | Toggle ForceAtlas2 to reorganize the graph |
-| **View modes** | "Classes" (aggregated) or "Full Graph" (with methods) |
-| **Info panel** | Shows dependencies and dependents, click to navigate |
+| **Info panel** | Shows dependencies, dependents, layer breakdown |
 
 ## Architecture
 
 ```
 php-deps/
 ├── analyze.php              # CLI entry point
+├── composer.json             # Dependencies (nikic/php-parser)
 ├── src/
 │   ├── Analyzer.php         # Orchestrator: scans files, runs 2-pass analysis
 │   ├── ClassVisitor.php     # Pass 1: extracts classes, methods, properties, DI

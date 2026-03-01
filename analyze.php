@@ -19,19 +19,31 @@ declare(strict_types=1);
  */
 
 $basePath = dirname(__DIR__, 1);
-require_once $basePath . '/vendor/autoload.php';
 
-// Autoload our analyzer classes
-spl_autoload_register(function (string $class) {
-    $prefix = 'DepsGraph\\';
-    if (str_starts_with($class, $prefix)) {
-        $relative = str_replace('\\', '/', substr($class, strlen($prefix)));
-        $file = __DIR__ . '/src/' . $relative . '.php';
-        if (file_exists($file)) {
-            require_once $file;
+// Autoload: prefer own vendor/, fallback to parent project's vendor/
+$ownAutoload = __DIR__ . '/vendor/autoload.php';
+$parentAutoload = $basePath . '/vendor/autoload.php';
+
+if (file_exists($ownAutoload)) {
+    require_once $ownAutoload;
+} elseif (file_exists($parentAutoload)) {
+    require_once $parentAutoload;
+    // Register our own classes when using parent autoload
+    spl_autoload_register(function (string $class) {
+        $prefix = 'DepsGraph\\';
+        if (str_starts_with($class, $prefix)) {
+            $relative = str_replace('\\', '/', substr($class, strlen($prefix)));
+            $file = __DIR__ . '/src/' . $relative . '.php';
+            if (file_exists($file)) {
+                require_once $file;
+            }
         }
-    }
-});
+    });
+} else {
+    fwrite(STDERR, "Error: No vendor/autoload.php found.\n");
+    fwrite(STDERR, "Run: composer install (in " . __DIR__ . ")\n");
+    exit(1);
+}
 
 // Parse CLI arguments
 $scanDirs = [];
