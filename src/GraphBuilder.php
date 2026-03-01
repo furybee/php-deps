@@ -113,13 +113,14 @@ final class GraphBuilder
         foreach ($referencedClasses as $fqcn => $_) {
             if (!isset($existingNodes[$fqcn]) && !isset($classes[$fqcn])) {
                 $parts = explode('\\', $fqcn);
+                $className = end($parts);
                 $nodes[] = [
                     'id' => $fqcn,
                     'type' => 'class',
-                    'label' => end($parts),
+                    'label' => $className,
                     'namespace' => implode('\\', array_slice($parts, 0, -1)),
                     'layer' => TypeResolver::detectLayer($fqcn),
-                    'classType' => 'unknown',
+                    'classType' => self::guessClassType($className),
                     'methods' => [],
                     'methodCount' => 0,
                     'external' => true,
@@ -143,6 +144,15 @@ final class GraphBuilder
             $edgeTypeCounts[$type] = ($edgeTypeCounts[$type] ?? 0) + 1;
         }
 
+        $classTypeCounts = [];
+        foreach ($nodes as $node) {
+            if ($node['type'] === 'class') {
+                $ct = $node['classType'];
+                $classTypeCounts[$ct] = ($classTypeCounts[$ct] ?? 0) + 1;
+            }
+        }
+        arsort($classTypeCounts);
+
         return [
             'nodes' => $nodes,
             'edges' => $graphEdges,
@@ -152,8 +162,34 @@ final class GraphBuilder
                 'totalEdges' => count($graphEdges),
                 'layerCounts' => $layerCounts,
                 'edgeTypeCounts' => $edgeTypeCounts,
+                'classTypeCounts' => $classTypeCounts,
             ],
         ];
+    }
+
+    /**
+     * Guess the PHP type of an unparsed class from its name.
+     */
+    private static function guessClassType(string $className): string
+    {
+        // Starts with I + uppercase = likely interface (IUserService, IRepository)
+        if (preg_match('/^I[A-Z]/', $className)) {
+            return 'interface';
+        }
+
+        if (str_ends_with($className, 'Interface') || str_ends_with($className, 'Contract')) {
+            return 'interface';
+        }
+
+        if (str_ends_with($className, 'Trait')) {
+            return 'trait';
+        }
+
+        if (str_ends_with($className, 'Enum')) {
+            return 'enum';
+        }
+
+        return 'class';
     }
 
     private function isAppClass(string $fqcn): bool

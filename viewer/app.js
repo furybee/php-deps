@@ -31,6 +31,15 @@
     }
   }
 
+  const CLASS_TYPE_COLORS = {
+    class: "#3B82F6",
+    abstract: "#A78BFA",
+    interface: "#06B6D4",
+    trait: "#F59E0B",
+    enum: "#EC4899",
+    unknown: "#6B7280",
+  };
+
   const EDGE_COLORS = {
     calls: "#4B5563",
     depends_on: "#374151",
@@ -52,6 +61,7 @@
   let viewMode = "classes"; // "classes" or "full"
   let activeFilters = {};
   let activeEdgeFilters = {};
+  let activeClassTypeFilters = {};
   let hoveredNeighbors = new Set();
   let selectedNeighbors = new Set();
 
@@ -340,6 +350,12 @@
       return res;
     }
 
+    // Class type filter
+    if (data.classType && activeClassTypeFilters[data.classType] === false) {
+      res.hidden = true;
+      return res;
+    }
+
     // Selected node: show only the node + its direct connections, hide everything else
     if (selectedNode) {
       if (node === selectedNode) {
@@ -459,6 +475,35 @@
 
     // Edge toggle all
     setupToggleAll("edge-toggle-all", edgeFiltersEl, activeEdgeFilters, "edgeType");
+
+    // Class type filters
+    const classTypeFiltersEl = document.getElementById("class-type-filters");
+    const classTypes = Object.entries(s.classTypeCounts || {}).sort((a, b) => b[1] - a[1]);
+    const classTypeLabels = { class: "Class", abstract: "Abstract", interface: "Interface", trait: "Trait", enum: "Enum" };
+
+    classTypes.forEach(([type, count]) => {
+      activeClassTypeFilters[type] = true;
+      const color = CLASS_TYPE_COLORS[type] || "#6B7280";
+      const label = classTypeLabels[type] || type;
+      const item = document.createElement("label");
+      item.className = "filter-item";
+      item.innerHTML = `
+        <input type="checkbox" checked data-class-type="${type}">
+        <span class="filter-dot" style="background:${color}"></span>
+        <span>${label}</span>
+        <span class="filter-count">${count}</span>
+      `;
+      classTypeFiltersEl.appendChild(item);
+    });
+
+    classTypeFiltersEl.addEventListener("change", (e) => {
+      if (e.target.dataset.classType) {
+        activeClassTypeFilters[e.target.dataset.classType] = e.target.checked;
+        renderer.refresh({ skipIndexation: true });
+      }
+    });
+
+    setupToggleAll("class-type-toggle-all", classTypeFiltersEl, activeClassTypeFilters, "classType");
 
     // Sidebar toggle
     const toggle = document.getElementById("sidebar-toggle");

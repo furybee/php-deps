@@ -212,6 +212,14 @@ final class TypeResolver
             }
         }
 
+        // Fallback: infer layer from class name suffix
+        $parts = explode('\\', $fqcn);
+        $className = end($parts);
+        $suffixLayer = self::detectLayerFromSuffix($className);
+        if ($suffixLayer !== null) {
+            return $suffixLayer;
+        }
+
         return 'Other';
     }
 
@@ -230,6 +238,60 @@ final class TypeResolver
         'DTOs' => 'DTO',
         'Dtos' => 'DTO',
     ];
+
+    /** Common class name suffixes that indicate an architectural layer */
+    private const SUFFIX_TO_LAYER = [
+        'Controller' => 'Controller',
+        'Service' => 'Service',
+        'Repository' => 'Repository',
+        'Exception' => 'Exception',
+        'Validator' => 'Validator',
+        'Observer' => 'Observer',
+        'Listener' => 'Listener',
+        'Event' => 'Event',
+        'Job' => 'Job',
+        'Command' => 'Command',
+        'Policy' => 'Policy',
+        'Middleware' => 'Middleware',
+        'Request' => 'Request',
+        'Resource' => 'Resource',
+        'Notification' => 'Notification',
+        'Mail' => 'Mail',
+        'Cast' => 'Cast',
+        'Rule' => 'Rule',
+        'Scope' => 'Scope',
+        'Factory' => 'Factory',
+        'Seeder' => 'Seeder',
+        'Migration' => 'Migration',
+        'Provider' => 'Provider',
+        'Helper' => 'Helper',
+        'Action' => 'Action',
+        'UseCase' => 'UseCase',
+        'Handler' => 'Handler',
+        'Transformer' => 'Transformer',
+        'Presenter' => 'Presenter',
+        'Filter' => 'Filter',
+        'Adapter' => 'Adapter',
+        'Enum' => 'Enum',
+        'Interface' => 'Contract',
+        'Contract' => 'Contract',
+        'Trait' => 'Trait',
+    ];
+
+    /**
+     * Detect layer from a class name suffix (e.g. UserNotFoundException → Exception).
+     */
+    private static function detectLayerFromSuffix(string $className): ?string
+    {
+        // Check longest suffixes first to avoid partial matches (e.g. "Controller" before "er")
+        foreach (self::SUFFIX_TO_LAYER as $suffix => $layer) {
+            if (str_ends_with($className, $suffix) && $className !== $suffix) {
+                return $layer;
+            }
+        }
+
+        return null;
+    }
 
     /**
      * Clean up a namespace segment into a readable layer name.

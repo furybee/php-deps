@@ -96,6 +96,7 @@ final class ClassVisitor extends NodeVisitorAbstract
                     $node instanceof Node\Stmt\Interface_ => 'interface',
                     $node instanceof Node\Stmt\Trait_ => 'trait',
                     $node instanceof Node\Stmt\Enum_ => 'enum',
+                    $node instanceof Node\Stmt\Class_ && $node->isAbstract() => 'abstract',
                     default => 'class',
                 },
                 'layer' => TypeResolver::detectLayer($fqcn),
