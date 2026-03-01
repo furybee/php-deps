@@ -18,7 +18,7 @@ declare(strict_types=1);
  *   --output=output/graph.json
  */
 
-$basePath = dirname(__DIR__, 2);
+$basePath = dirname(__DIR__, 1);
 require_once $basePath . '/vendor/autoload.php';
 
 // Autoload our analyzer classes
