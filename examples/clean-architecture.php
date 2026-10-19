@@ -24,5 +24,13 @@ return [
         'Presentation' => ['Domain', 'Application'],
     ],
 
+    // Fail on dependency cycles. Remove to only check layers.
+    'cycles' => [
+        'level' => 'namespace',            // or 'class'
+        'depth' => 0,                      // namespace level: group on the first N segments, 0 = full namespace
+        'scope' => ['**'],                 // classes checked
+        'ignore' => ['**\Providers\**'],   // composition roots wire everything together
+    ],
+
     'baseline' => 'php-deps-baseline.json',
 ];

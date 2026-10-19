@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace DepsGraph\Architecture;
 
 /**
- * Known violations, accepted until fixed. Keyed by class pair so that moving code around does not resurface them.
+ * Known issues, accepted until fixed.
  */
 final class Baseline
 {
@@ -36,30 +36,30 @@ final class Baseline
     }
 
     /**
-     * @param Violation[] $violations
+     * @param Issue[] $issues
      */
-    public static function write(string $file, array $violations): void
+    public static function write(string $file, array $issues): void
     {
-        $keys = array_values(array_unique(array_map(static fn(Violation $v) => $v->key(), $violations)));
+        $keys = array_values(array_unique(array_map(static fn(Issue $issue) => $issue->key(), $issues)));
         sort($keys);
 
         file_put_contents($file, json_encode($keys, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . "\n");
     }
 
-    public function contains(Violation $violation): bool
+    public function contains(Issue $issue): bool
     {
-        return isset($this->keys[$violation->key()]);
+        return isset($this->keys[$issue->key()]);
     }
 
     /**
-     * Baselined violations that no longer occur: the baseline can shrink.
+     * Baselined issues that no longer occur: the baseline can shrink.
      *
-     * @param Violation[] $violations
+     * @param Issue[] $issues
      * @return string[]
      */
-    public function staleKeys(array $violations): array
+    public function staleKeys(array $issues): array
     {
-        $current = array_fill_keys(array_map(static fn(Violation $v) => $v->key(), $violations), true);
+        $current = array_fill_keys(array_map(static fn(Issue $issue) => $issue->key(), $issues), true);
 
         return array_keys(array_diff_key($this->keys, $current));
     }

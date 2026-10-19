@@ -7,28 +7,28 @@ namespace DepsGraph\Architecture;
 final class CheckResult
 {
     /**
-     * @param Violation[] $newViolations
+     * @param Issue[] $newIssues
      * @param string[] $staleBaselineKeys
      */
     public function __construct(
-        public readonly array $newViolations,
+        public readonly array $newIssues,
         public readonly int $baselinedCount,
         public readonly array $staleBaselineKeys,
     ) {
     }
 
     /**
-     * @param Violation[] $violations
+     * @param Issue[] $issues
      */
-    public static function from(array $violations, Baseline $baseline): self
+    public static function from(array $issues, Baseline $baseline): self
     {
-        $new = array_values(array_filter($violations, static fn(Violation $v) => !$baseline->contains($v)));
+        $new = array_values(array_filter($issues, static fn(Issue $issue) => !$baseline->contains($issue)));
 
-        return new self($new, count($violations) - count($new), $baseline->staleKeys($violations));
+        return new self($new, count($issues) - count($new), $baseline->staleKeys($issues));
     }
 
     public function isSuccessful(): bool
     {
-        return $this->newViolations === [];
+        return $this->newIssues === [];
     }
 }

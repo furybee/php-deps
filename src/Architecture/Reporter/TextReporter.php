@@ -12,21 +12,20 @@ final class TextReporter implements Reporter
     {
         $output = '';
 
-        $byLayers = [];
-        foreach ($result->newViolations as $violation) {
-            $byLayers["{$violation->sourceLayer} -> {$violation->targetLayer}"][] = $violation;
+        $byTitle = [];
+        foreach ($result->newIssues as $issue) {
+            $byTitle[$issue->title()][] = $issue;
         }
-        ksort($byLayers);
+        ksort($byTitle);
 
-        foreach ($byLayers as $layers => $violations) {
-            $output .= "\n{$layers} (" . count($violations) . ")\n";
-            foreach ($violations as $violation) {
-                $output .= "  {$violation->file}:{$violation->line}\n"
-                    . "    {$violation->sourceClass} -> {$violation->targetClass} ({$violation->edgeType})\n";
+        foreach ($byTitle as $title => $issues) {
+            $output .= "\n{$title} (" . count($issues) . ")\n";
+            foreach ($issues as $issue) {
+                $output .= "  {$issue->file()}:{$issue->line()}\n    {$issue->summary()}\n";
             }
         }
 
-        $output .= "\n" . count($result->newViolations) . " violation(s)";
+        $output .= "\n" . count($result->newIssues) . " violation(s)";
         if ($result->baselinedCount > 0) {
             $output .= ", {$result->baselinedCount} ignored by the baseline";
         }

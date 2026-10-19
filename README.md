@@ -25,7 +25,8 @@
 - **Force-directed layout** — ForceAtlas2 algorithm for natural clustering
 - **Search & filter** — find classes instantly, filter by layer or edge type
 - **No build step viewer** — static HTML, libraries loaded from a CDN, works from `file://` with a file picker
-- **Architecture rules** — forbid dependencies between layers, fail CI on new violations, baseline for existing ones
+- **Architecture rules** — forbid dependencies between layers or cycles, fail CI on new violations, baseline for existing ones
+- **Cycles & coupling metrics** — class and namespace cycles, afferent/efferent coupling, instability, abstractness
 - **Laravel optimized** — understands Laravel patterns (service injection, `app()` helper, Form Requests)
 
 ## Requirements
@@ -80,6 +81,8 @@ php analyze.php [--root=.] [--dir=app] [--dir=app-modules] [--exclude=vendor,tes
 | `--exclude` | `vendor,node_modules,.git,.claude,storage,bootstrap/cache` | Comma-separated. A bare name (`vendor`) matches a directory at any depth, a path (`bootstrap/cache`) is relative to the root |
 | `--output` | `<php-deps>/output/graph.json` | JSON output, relative to the current directory |
 | `--pretty` | off | Pretty-print the JSON (about twice as big) |
+| `--metrics` | off | Print cycles and coupling metrics (always in the JSON graph) |
+| `--namespace-depth` | `0` | Group namespaces on their first N segments for namespace metrics and cycles, 0 = full namespace |
 | `--config` | `<root>/php-deps.php` if present | Architecture rules file, see below |
 | `--check` | off | Check the rules, exit 1 on violations not in the baseline |
 | `--format` | `text` | Check report: `text`, `github` (Actions annotations) or `gitlab` (Code Quality report) |
@@ -131,7 +134,24 @@ php analyze.php --generate-baseline           # accept the current violations
 php analyze.php --check --format=gitlab > gl-code-quality-report.json
 ```
 
-The baseline lists violating class pairs, not lines, so moving code does not resurface them.
+### Cycles
+
+```php
+'cycles' => [
+    'level' => 'namespace',          // or 'class'
+    'depth' => 3,                    // namespace level: group on the first N segments, 0 = full namespace
+    'scope' => ['Modules\**'],       // classes checked, default everything
+    'ignore' => ['**\Providers\**'], // classes left out, typically composition roots
+],
+```
+
+Each cycle is reported once, with the shortest path through it and the location of the
+dependency that closes it. A cycle that grows is reported again: the baseline only accepts it as it was.
+Traits are inlined into the classes using them, so a trait referencing its host class is not a cycle.
+
+### Baseline
+
+The baseline lists violating class pairs and cycles, not lines, so moving code does not resurface them.
 The text report tells when baseline entries no longer occur.
 
 GitLab CI:
@@ -144,6 +164,23 @@ architecture:
     reports:
       codequality: gl-code-quality-report.json
 ```
+
+## Metrics
+
+`php analyze.php --metrics` prints the largest class and namespace cycles, the most depended upon
+classes, the classes with the most dependencies, and the namespaces furthest from the main sequence.
+The same data is in the JSON graph:
+
+| Field | Content |
+|-------|---------|
+| class node `metrics` | `ca` (classes depending on it), `ce` (classes it depends on), `instability` = Ce / (Ca + Ce) |
+| class node `cycle` | Index in `cycles`, or `null` |
+| `cycles`, `namespaceCycles` | Strongly connected components, largest first: `members` and a shortest `path` |
+| `namespaces` | Per namespace: `size`, `ca`, `ce`, `instability`, `abstractness` (share of interfaces and abstract classes), `distance` = \|A + I - 1\| |
+
+A high distance means concrete code that everything depends on (hard to change) or abstractions
+nobody uses. Namespaces without dependencies (enums, DTOs, exceptions) are left out of the ranking:
+they sit at distance 1 by construction.
 
 ## What It Detects
 
@@ -236,7 +273,8 @@ php-deps/
 │   ├── ClassHierarchy.php   # Member lookups through parents, traits, interfaces
 │   ├── LayerDetector.php    # Infers the architectural layer of a class
 │   ├── GraphBuilder.php     # Builds the final JSON graph (nodes + edges)
-│   ├── Architecture/        # Layer rules, baseline, text/GitHub/GitLab reports
+│   ├── Architecture/        # Layer and cycle rules, baseline, text/GitHub/GitLab reports
+│   ├── Metrics/             # Dependency map, cycles (Tarjan), coupling metrics
 │   └── Console/             # CLI command
 ├── tests/                   # PHPUnit tests and fixture projects
 ├── viewer/

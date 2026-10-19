@@ -14,13 +14,13 @@ final class GithubReporter implements Reporter
     public function report(CheckResult $result): string
     {
         $output = '';
-        foreach ($result->newViolations as $violation) {
+        foreach ($result->newIssues as $issue) {
             $output .= sprintf(
                 "::error file=%s,line=%d,title=%s::%s\n",
-                $violation->file,
-                $violation->line,
-                self::escapeProperty("Architecture: {$violation->sourceLayer} -> {$violation->targetLayer}"),
-                self::escapeData($violation->message()),
+                $issue->file(),
+                $issue->line(),
+                self::escapeProperty("Architecture: {$issue->title()}"),
+                self::escapeData($issue->message()),
             );
         }
 
