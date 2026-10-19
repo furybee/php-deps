@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace DepsGraph\Console;
 
 use DepsGraph\Analyzer;
+use DepsGraph\GraphBuilder;
 use DepsGraph\Architecture\ArchitectureConfig;
 use DepsGraph\Architecture\Baseline;
 use DepsGraph\Architecture\CheckResult;
@@ -18,6 +19,9 @@ use DepsGraph\Architecture\Reporter\TextReporter;
 use DepsGraph\Metrics\GraphMetrics;
 use DepsGraph\Metrics\MetricsReport;
 
+/**
+ * @phpstan-import-type Graph from GraphBuilder
+ */
 final class AnalyzeCommand
 {
     public const SUCCESS = 0;
@@ -161,7 +165,7 @@ TXT;
 
     /**
      * @param array<string, string[]> $options
-     * @return array{nodes: array<mixed>, edges: array<mixed>, stats: array<string, mixed>}
+     * @return Graph
      */
     private function analyze(array $options, ArchitectureConfig $config, string $root): array
     {
@@ -195,7 +199,7 @@ TXT;
     }
 
     /**
-     * @param array<string, mixed> $graph
+     * @param Graph $graph
      */
     private function writeGraph(array $graph, string $outputFile, bool $isPretty): void
     {

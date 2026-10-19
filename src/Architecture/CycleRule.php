@@ -29,15 +29,15 @@ final class CycleRule
     }
 
     /**
-     * @param array<string, mixed> $config
+     * @param array<mixed> $config
      */
     public static function fromArray(array $config): self
     {
         return new self(
-            level: (string) ($config['level'] ?? self::LEVEL_NAMESPACE),
-            depth: (int) ($config['depth'] ?? 0),
-            scope: array_values(array_map('strval', (array) ($config['scope'] ?? ['**']))),
-            ignore: array_values(array_map('strval', (array) ($config['ignore'] ?? []))),
+            level: ConfigValue::string($config['level'] ?? self::LEVEL_NAMESPACE, 'cycles.level'),
+            depth: ConfigValue::int($config['depth'] ?? 0, 'cycles.depth'),
+            scope: ConfigValue::stringList($config['scope'] ?? ['**'], 'cycles.scope'),
+            ignore: ConfigValue::stringList($config['ignore'] ?? [], 'cycles.ignore'),
         );
     }
 

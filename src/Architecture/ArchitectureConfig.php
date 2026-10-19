@@ -46,10 +46,10 @@ final class ArchitectureConfig
         }
 
         return new self(
-            layers: self::listMap($config['layers'] ?? [], 'layers'),
-            rules: self::listMap($config['rules'] ?? [], 'rules'),
-            paths: array_values((array) ($config['paths'] ?? [])),
-            exclude: isset($config['exclude']) ? array_values((array) $config['exclude']) : null,
+            layers: ConfigValue::listMap($config['layers'] ?? [], 'layers'),
+            rules: ConfigValue::listMap($config['rules'] ?? [], 'rules'),
+            paths: ConfigValue::stringList($config['paths'] ?? [], 'paths'),
+            exclude: isset($config['exclude']) ? ConfigValue::stringList($config['exclude'], 'exclude') : null,
             baseline: is_string($baseline) ? $baseline : null,
             cycles: self::cycleRule($config['cycles'] ?? null),
         );
@@ -68,22 +68,5 @@ final class ArchitectureConfig
             is_array($value) => CycleRule::fromArray($value),
             default => throw new InvalidConfigException('"cycles" must be a boolean or an array'),
         };
-    }
-
-    /**
-     * @return array<string, string[]>
-     */
-    private static function listMap(mixed $value, string $key): array
-    {
-        if (!is_array($value)) {
-            throw new InvalidConfigException("\"{$key}\" must be an array of lists");
-        }
-
-        $map = [];
-        foreach ($value as $name => $items) {
-            $map[(string) $name] = array_values(array_map('strval', (array) $items));
-        }
-
-        return $map;
     }
 }

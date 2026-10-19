@@ -11,6 +11,10 @@ use PhpParser\NodeVisitorAbstract;
 use PhpParser\Parser;
 use PhpParser\ParserFactory;
 
+/**
+ * @phpstan-import-type ClassData from ClassVisitor
+ * @phpstan-import-type Graph from GraphBuilder
+ */
 final class Analyzer
 {
     private readonly string $basePath;
@@ -39,7 +43,7 @@ final class Analyzer
     }
 
     /**
-     * @return array{root: string, nodes: array<mixed>, edges: array<mixed>, stats: array<string, mixed>}
+     * @return Graph
      */
     public function analyze(): array
     {
@@ -62,7 +66,7 @@ final class Analyzer
 
     /**
      * @param string[] $files
-     * @return array<string, array<string, mixed>>
+     * @return array<string, ClassData>
      */
     private function extractClasses(array $files): array
     {
@@ -115,7 +119,7 @@ final class Analyzer
     }
 
     /**
-     * @return string[]
+     * @return list<string>
      */
     private function findPhpFiles(): array
     {
@@ -137,6 +141,7 @@ final class Analyzer
                 ),
             );
 
+            /** @var \SplFileInfo $file */
             foreach ($iterator as $file) {
                 if ($file->getExtension() === 'php') {
                     $files[] = $file->getPathname();

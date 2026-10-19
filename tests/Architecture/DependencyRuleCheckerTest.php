@@ -63,7 +63,7 @@ final class DependencyRuleCheckerTest extends TestCase
     }
 
     /**
-     * @param array<array{string, string, string, int}> $edges
+     * @param list<array{string, string, string, int}> $edges
      * @return Violation[]
      */
     private function check(array $edges): array

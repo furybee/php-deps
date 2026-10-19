@@ -4,11 +4,16 @@ declare(strict_types=1);
 
 namespace DepsGraph\Metrics;
 
+use DepsGraph\GraphBuilder;
+
 /**
  * Class-to-class (or namespace-to-namespace) dependencies, whatever the edge type.
  *
  * Traits are inlined: their dependencies count for every class using them, and `uses_trait`
  * is not a dependency, otherwise a trait referencing its host class would always form a cycle.
+ *
+ * @phpstan-import-type Edge from GraphBuilder
+ * @phpstan-type MinimalGraph array{nodes: list<array{id: string, type: string, classType?: string, file?: string|null}>, edges: list<array{source: string, target: string, type: string, line?: int}>}
  */
 final class DependencyMap
 {
@@ -16,7 +21,7 @@ final class DependencyMap
      * @param array<string, array<string, true>> $dependencies node => [dependency => true]
      * @param array<string, int> $sizes node => number of classes it groups
      * @param array<string, int> $abstractSizes node => number of interfaces and abstract classes
-     * @param array<string, array<string, array{source: string, target: string, type: string, line: int}>> $evidence
+     * @param array<string, array<string, Edge>> $evidence
      *        source => [target => first edge behind that dependency]
      */
     private function __construct(
@@ -28,7 +33,7 @@ final class DependencyMap
     }
 
     /**
-     * @return array{source: string, target: string, type: string, line: int}|null
+     * @return Edge|null
      */
     public function evidence(string $source, string $target): ?array
     {
@@ -36,7 +41,7 @@ final class DependencyMap
     }
 
     /**
-     * @param array{nodes: array<array<string, mixed>>, edges: array<array{source: string, target: string, type: string}>} $graph
+     * @param MinimalGraph $graph
      * @param int|null $namespaceDepth null for class level, 0 for full namespaces, N for the first N segments
      * @param (\Closure(string): bool)|null $classFilter classes rejected are left out entirely
      */
@@ -56,11 +61,12 @@ final class DependencyMap
 
             $group = $namespaceDepth === null ? $node['id'] : self::namespaceOf($node['id'], $namespaceDepth);
             $groupOf[$node['id']] = $group;
-            $isTrait[$node['id']] = $node['classType'] === 'trait';
+            $classType = $node['classType'] ?? 'class';
+            $isTrait[$node['id']] = $classType === 'trait';
             $dependencies[$group] ??= [];
             $sizes[$group] = ($sizes[$group] ?? 0) + 1;
             $abstractSizes[$group] = ($abstractSizes[$group] ?? 0)
-                + (in_array($node['classType'], ['interface', 'abstract'], true) ? 1 : 0);
+                + (in_array($classType, ['interface', 'abstract'], true) ? 1 : 0);
         }
 
         $traitUsers = [];
@@ -94,7 +100,7 @@ final class DependencyMap
                     'source' => $edge['source'],
                     'target' => $edge['target'],
                     'type' => $edge['type'],
-                    'line' => (int) ($edge['line'] ?? 0),
+                    'line' => $edge['line'] ?? 0,
                 ];
             }
         }

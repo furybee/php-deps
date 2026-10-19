@@ -10,7 +10,7 @@ namespace DepsGraph\Metrics;
 final class CycleDetector
 {
     /**
-     * @return array<string[]> components of 2+ nodes, largest first, members sorted
+     * @return list<list<string>> components of 2+ nodes, largest first, members sorted
      */
     public function components(DependencyMap $map): array
     {
@@ -53,7 +53,7 @@ final class CycleDetector
                 if ($lowLink[$node] === $index[$node]) {
                     $component = [];
                     do {
-                        $member = array_pop($stack);
+                        $member = array_pop($stack) ?? throw new \LogicException('Tarjan stack exhausted before reaching the component root');
                         unset($onStack[$member]);
                         $component[] = $member;
                     } while ($member !== $node);
@@ -79,8 +79,8 @@ final class CycleDetector
     /**
      * Shortest cycle going through $start inside its component: a concrete path to break.
      *
-     * @param string[] $component
-     * @return string[] nodes in order, the last one depends on the first
+     * @param list<string> $component
+     * @return list<string> nodes in order, the last one depends on the first
      */
     public function shortestCycle(DependencyMap $map, array $component, string $start): array
     {

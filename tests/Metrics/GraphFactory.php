@@ -4,12 +4,17 @@ declare(strict_types=1);
 
 namespace DepsGraph\Tests\Metrics;
 
+use DepsGraph\Metrics\DependencyMap;
+
+/**
+ * @phpstan-import-type MinimalGraph from DependencyMap
+ */
 final class GraphFactory
 {
     /**
      * @param array<string, string> $classes FQCN => classType
-     * @param array<array{0: string, 1: string, 2?: string}> $edges [source, target, type = calls]
-     * @return array{nodes: array<array<string, mixed>>, edges: array<array{source: string, target: string, type: string, line: int}>}
+     * @param list<array{0: string, 1: string, 2?: string}> $edges [source, target, type = calls]
+     * @return MinimalGraph
      */
     public static function make(array $classes, array $edges): array
     {

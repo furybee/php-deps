@@ -4,11 +4,16 @@ declare(strict_types=1);
 
 namespace DepsGraph\Metrics;
 
+use DepsGraph\GraphBuilder;
+
 /**
  * Adds coupling metrics and cycles to a built graph:
  * - class nodes get `metrics` {ca, ce, instability} and `cycle`, the index of their class cycle or null
  * - `cycles` lists class cycles, largest first, with a shortest path through each
  * - `namespaces` lists namespace metrics and namespace cycles
+ *
+ * @phpstan-import-type Graph from GraphBuilder
+ * @phpstan-import-type Cycle from GraphBuilder
  */
 final class GraphMetrics
 {
@@ -19,8 +24,8 @@ final class GraphMetrics
     }
 
     /**
-     * @param array{nodes: array<array<string, mixed>>, edges: array<mixed>, stats: array<string, mixed>} $graph
-     * @return array{nodes: array<array<string, mixed>>, edges: array<mixed>, stats: array<string, mixed>, cycles: array<mixed>, namespaces: array<mixed>, namespaceCycles: array<mixed>}
+     * @param Graph $graph
+     * @return Graph
      */
     public function enrich(array $graph, int $namespaceDepth = 0): array
     {
@@ -35,15 +40,16 @@ final class GraphMetrics
             }
         }
 
-        foreach ($graph['nodes'] as &$node) {
-            if ($node['type'] !== 'class') {
-                continue;
+        $nodes = [];
+        foreach ($graph['nodes'] as $node) {
+            if ($node['type'] === 'class') {
+                $metrics = $classMetrics[$node['id']];
+                $node['metrics'] = ['ca' => $metrics['ca'], 'ce' => $metrics['ce'], 'instability' => $metrics['instability']];
+                $node['cycle'] = $cycleOf[$node['id']] ?? null;
             }
-            $metrics = $classMetrics[$node['id']];
-            $node['metrics'] = ['ca' => $metrics['ca'], 'ce' => $metrics['ce'], 'instability' => $metrics['instability']];
-            $node['cycle'] = $cycleOf[$node['id']] ?? null;
+            $nodes[] = $node;
         }
-        unset($node);
+        $graph['nodes'] = $nodes;
 
         $namespaceMap = DependencyMap::fromGraph($graph, $namespaceDepth);
         $namespaces = [];
@@ -62,7 +68,7 @@ final class GraphMetrics
     }
 
     /**
-     * @return array<array{members: string[], path: string[]}>
+     * @return list<Cycle>
      */
     private function cycles(DependencyMap $map): array
     {

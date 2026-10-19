@@ -4,6 +4,7 @@
 
 **Static analysis tool for visualizing PHP class dependencies and call graphs.**
 
+[![CI](https://github.com/furybee/php-deps/actions/workflows/ci.yml/badge.svg)](https://github.com/furybee/php-deps/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![PHP](https://img.shields.io/badge/PHP-8.1+-8892BF.svg)](https://www.php.net)
 [![Laravel](https://img.shields.io/badge/Laravel-Compatible-FF2D20.svg)](https://laravel.com)
@@ -303,8 +304,12 @@ php-deps/
 
 ```bash
 composer install
-composer test
+composer test       # PHPUnit
+composer analyse    # PHPStan, level max on src and tests
+php analyze.php --check   # php-deps checks its own layers and cycles (php-deps.php)
 ```
+
+CI runs the tests on PHP 8.1 to 8.4, PHPStan and the self-check.
 
 ## Performance
 
