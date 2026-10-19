@@ -1,0 +1,133 @@
+<?php
+
+declare(strict_types=1);
+
+namespace DepsGraph\Tests;
+
+use DepsGraph\Analyzer;
+use PHPUnit\Framework\TestCase;
+
+final class AnalyzerTest extends TestCase
+{
+    private const SERVICE = 'Acme\Services\UserService';
+
+    /** @var array{nodes: array<mixed>, edges: array<mixed>, stats: array<string, mixed>} */
+    private static array $graph;
+
+    public static function setUpBeforeClass(): void
+    {
+        self::$graph = (new Analyzer(__DIR__ . '/Fixtures/Basic'))->analyze();
+    }
+
+    public function testResolvesUseStatementsGroupUsesAndFullyQualifiedNames(): void
+    {
+        $this->assertEdge(self::SERVICE . '::handle', 'Acme\Contracts\Repository::find', 'calls');
+        $this->assertNoEdgeTo('RuntimeException');
+        $this->assertNodeMissing('Acme\Services\RuntimeException');
+    }
+
+    public function testKeepsEdgesBetweenScannedClassesWhateverTheirNamespace(): void
+    {
+        $this->assertEdge(self::SERVICE, 'Acme\Contracts\Repository', 'depends_on');
+        $this->assertEdge(self::SERVICE, 'Acme\Services\Mailer', 'depends_on');
+        $this->assertEdge('Acme\Models\User', 'Acme\Models\Model', 'extends');
+        $this->assertEdge('Acme\Models\User', 'Acme\Models\HasProfile', 'uses_trait');
+    }
+
+    public function testDropsEdgesTowardsClassesOutsideTheScannedDirectories(): void
+    {
+        $this->assertNoEdgeTo('Illuminate\Database\Eloquent\Model');
+    }
+
+    public function testResolvesParentCallsToTheParentClass(): void
+    {
+        $this->assertEdge(self::SERVICE . '::handle', 'Acme\Services\BaseService::boot', 'calls');
+    }
+
+    public function testPointsInheritedAndTraitMethodsToTheirDeclaringClass(): void
+    {
+        $this->assertEdge(self::SERVICE . '::handle', 'Acme\Models\HasProfile::profile', 'calls');
+    }
+
+    public function testCollapsesUndeclaredMethodsToTheClassNode(): void
+    {
+        $this->assertEdge(self::SERVICE . '::handle', 'Acme\Models\User', 'calls');
+        $this->assertGreaterThan(0, self::$graph['stats']['callsCollapsedToClass']);
+    }
+
+    public function testFollowsStaticReturnTypesAsTheCallingClass(): void
+    {
+        $this->assertEdge(self::SERVICE . '::handle', 'Acme\Models\User::notify', 'calls');
+    }
+
+    public function testInfersTypesFromNullsafeCallsDocblocksAndPropertyChains(): void
+    {
+        $this->assertEdge(self::SERVICE . '::handle', 'Acme\Services\Mailer::send', 'calls');
+        $this->assertEdge(self::SERVICE . '::documented', 'Acme\Models\User::notify', 'calls');
+        $this->assertEdge(self::SERVICE . '::documented', 'Acme\Models\HasProfile::profile', 'calls');
+    }
+
+    public function testDetectsContainerResolutions(): void
+    {
+        $this->assertEdge(self::SERVICE . '::handle', 'Acme\Services\Mailer', 'resolves');
+    }
+
+    public function testKeepsAnonymousClassesOutOfTheEnclosingClass(): void
+    {
+        $methods = $this->node(self::SERVICE)['methods'];
+
+        $this->assertSame(['__construct', 'handle', 'documented', 'afterAnonymousClass'], $methods);
+        $this->assertEdge(self::SERVICE . '::handle', self::SERVICE . '::afterAnonymousClass', 'calls');
+        $this->assertEdge(self::SERVICE . '::afterAnonymousClass', 'Acme\Models\User', 'instantiates');
+    }
+
+    public function testNeverEmitsEdgesTowardsUnknownNodes(): void
+    {
+        $ids = array_flip(array_column(self::$graph['nodes'], 'id'));
+
+        foreach (self::$graph['edges'] as $edge) {
+            $this->assertArrayHasKey($edge['source'], $ids, "Unknown source {$edge['source']}");
+            $this->assertArrayHasKey($edge['target'], $ids, "Unknown target {$edge['target']}");
+        }
+    }
+
+    public function testExcludesBareNamesAtAnyDepthAndPathsFromTheRoot(): void
+    {
+        $graph = (new Analyzer(__DIR__ . '/Fixtures/Excluded', ['.'], ['vendor', 'src/cache']))->analyze();
+
+        $this->assertSame(['Excluded\Kept'], array_column($graph['nodes'], 'id'));
+    }
+
+    private function assertEdge(string $source, string $target, string $type): void
+    {
+        $this->assertContains(
+            ['source' => $source, 'target' => $target, 'type' => $type],
+            self::$graph['edges'],
+            "Missing {$type} edge {$source} -> {$target}",
+        );
+    }
+
+    private function assertNoEdgeTo(string $target): void
+    {
+        $this->assertNotContains($target, array_column(self::$graph['edges'], 'target'));
+    }
+
+    private function assertNodeMissing(string $id): void
+    {
+        $this->assertNotContains($id, array_column(self::$graph['nodes'], 'id'));
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function node(string $id): array
+    {
+        foreach (self::$graph['nodes'] as $node) {
+            if ($node['id'] === $id) {
+                return $node;
+            }
+        }
+
+        $this->fail("Node {$id} not found");
+    }
+}
