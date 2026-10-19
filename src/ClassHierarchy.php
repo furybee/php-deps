@@ -7,6 +7,8 @@ namespace DepsGraph;
 /**
  * Member lookups that follow inheritance: own members first, then traits,
  * parent classes and interfaces. Method names are case-insensitive, as in PHP.
+ *
+ * @phpstan-import-type ClassData from ClassVisitor
  */
 final class ClassHierarchy
 {
@@ -17,13 +19,13 @@ final class ClassHierarchy
     private array $declaringCache = [];
 
     /**
-     * @param array<string, array<string, mixed>> $classMap
+     * @param array<string, ClassData> $classMap
      */
     public function __construct(private readonly array $classMap)
     {
         foreach ($classMap as $fqcn => $data) {
             foreach (array_keys($data['methods']) as $method) {
-                $this->methodIndex[$fqcn][strtolower((string) $method)] = (string) $method;
+                $this->methodIndex[$fqcn][strtolower($method)] = $method;
             }
         }
     }

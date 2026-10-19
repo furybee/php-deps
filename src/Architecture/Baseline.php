@@ -32,7 +32,7 @@ final class Baseline
             throw new InvalidConfigException("Invalid baseline file: {$file}");
         }
 
-        return new self(array_fill_keys(array_map('strval', $keys), true));
+        return new self(array_fill_keys(ConfigValue::stringList($keys, 'baseline'), true));
     }
 
     /**

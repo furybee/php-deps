@@ -7,6 +7,17 @@ namespace DepsGraph;
 /**
  * Builds the graph JSON structure. Only classes found in the scanned
  * directories become nodes: edges towards anything else are dropped.
+ *
+ * @phpstan-import-type ClassData from ClassVisitor
+ * @phpstan-import-type MethodData from ClassVisitor
+ * @phpstan-type Edge array{source: string, target: string, type: string, line: int}
+ * @phpstan-type ClassMetrics array{ca: int, ce: int, instability: float}
+ * @phpstan-type ClassNode array{id: string, type: 'class', label: string, namespace: string, layer: string, classType: string, file: string|null, line: int, methods: list<string>, methodCount: int, metrics?: ClassMetrics, cycle?: int|null}
+ * @phpstan-type MethodNode array{id: string, type: 'method', label: string, class: string, visibility: string, static: bool, line: int, layer: string}
+ * @phpstan-type Cycle array{members: list<string>, path: list<string>}
+ * @phpstan-type NamespaceMetrics array{id: string, size: int, ca: int, ce: int, instability: float, abstractness: float, distance: float}
+ * @phpstan-type Stats array{totalClasses: int, totalMethods: int, totalEdges: int, callsCollapsedToClass: int, layerCounts: array<string, int>, edgeTypeCounts: array<string, int>, classTypeCounts: array<string, int>, classCycles?: int, namespaceCycles?: int}
+ * @phpstan-type Graph array{root?: string, nodes: list<ClassNode|MethodNode>, edges: list<Edge>, stats: Stats, cycles?: list<Cycle>, namespaces?: list<NamespaceMetrics>, namespaceCycles?: list<Cycle>}
  */
 final class GraphBuilder
 {
@@ -28,13 +39,13 @@ final class GraphBuilder
     /** @var array<string, true> "SourceClass|TargetClass" */
     private array $linkedClasses = [];
 
-    /** @var array<array{source: string, target: string, type: string, line: int}> */
+    /** @var list<Edge> */
     private array $graphEdges = [];
 
     /**
-     * @param array<string, array<string, mixed>> $classes keyed by FQCN
-     * @param array<array{source: string, target: string, type: string, line: int}> $rawEdges
-     * @return array{nodes: array<mixed>, edges: array<mixed>, stats: array<string, mixed>}
+     * @param array<string, ClassData> $classes keyed by FQCN
+     * @param list<Edge> $rawEdges
+     * @return Graph
      */
     public function build(array $classes, array $rawEdges, ClassHierarchy $hierarchy): array
     {
@@ -46,7 +57,7 @@ final class GraphBuilder
         foreach ($classes as $fqcn => $data) {
             $nodes[] = $this->classNode($fqcn, $data);
             foreach ($data['methods'] as $methodName => $methodData) {
-                $nodes[] = $this->methodNode($fqcn, (string) $methodName, $methodData, $data['layer']);
+                $nodes[] = $this->methodNode($fqcn, $methodName, $methodData, $data['layer']);
             }
             $this->addClassLevelEdges($fqcn, $data, $hierarchy);
         }
@@ -81,7 +92,7 @@ final class GraphBuilder
     }
 
     /**
-     * @param array<string, mixed> $data
+     * @param ClassData $data
      */
     private function addClassLevelEdges(string $fqcn, array $data, ClassHierarchy $hierarchy): void
     {
@@ -104,8 +115,8 @@ final class GraphBuilder
     /**
      * Types used in method signatures and property declarations.
      *
-     * @param array<string, array<string, mixed>> $classes
-     * @return array<array{source: string, target: string, type: string, line: int}>
+     * @param array<string, ClassData> $classes
+     * @return list<Edge>
      */
     private function signatureEdges(array $classes): array
     {
@@ -132,7 +143,8 @@ final class GraphBuilder
      */
     private function resolveTarget(string $target, ClassHierarchy $hierarchy, int &$collapsedCalls): ?string
     {
-        [$targetClass, $targetMethod] = array_pad(explode('::', $target, 2), 2, null);
+        $targetClass = self::classOf($target);
+        $targetMethod = str_contains($target, '::') ? explode('::', $target, 2)[1] : null;
         if (!$hierarchy->has($targetClass)) {
             return null;
         }
@@ -156,8 +168,8 @@ final class GraphBuilder
     }
 
     /**
-     * @param array<string, mixed> $data
-     * @return array<string, mixed>
+     * @param ClassData $data
+     * @return ClassNode
      */
     private function classNode(string $fqcn, array $data): array
     {
@@ -176,8 +188,8 @@ final class GraphBuilder
     }
 
     /**
-     * @param array<string, mixed> $methodData
-     * @return array<string, mixed>
+     * @param MethodData $methodData
+     * @return MethodNode
      */
     private function methodNode(string $fqcn, string $methodName, array $methodData, string $layer): array
     {
@@ -206,9 +218,9 @@ final class GraphBuilder
     }
 
     /**
-     * @param array<string, array<string, mixed>> $classes
-     * @param array<array<string, mixed>> $nodes
-     * @return array<string, mixed>
+     * @param array<string, ClassData> $classes
+     * @param list<ClassNode|MethodNode> $nodes
+     * @return Stats
      */
     private function stats(array $classes, array $nodes, int $collapsedCalls): array
     {

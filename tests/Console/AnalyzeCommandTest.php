@@ -5,8 +5,12 @@ declare(strict_types=1);
 namespace DepsGraph\Tests\Console;
 
 use DepsGraph\Console\AnalyzeCommand;
+use DepsGraph\GraphBuilder;
 use PHPUnit\Framework\TestCase;
 
+/**
+ * @phpstan-import-type Graph from GraphBuilder
+ */
 final class AnalyzeCommandTest extends TestCase
 {
     private const FIXTURE = __DIR__ . '/../Fixtures/Architecture';
@@ -26,8 +30,8 @@ final class AnalyzeCommandTest extends TestCase
         foreach (['php-deps.php', 'src'] as $entry) {
             exec('cp -R ' . escapeshellarg(self::FIXTURE . '/' . $entry) . ' ' . escapeshellarg($this->workDir));
         }
-        $this->stdout = fopen('php://memory', 'w+');
-        $this->stderr = fopen('php://memory', 'w+');
+        $this->stdout = fopen('php://memory', 'w+') ?: throw new \RuntimeException('Cannot open stdout stream');
+        $this->stderr = fopen('php://memory', 'w+') ?: throw new \RuntimeException('Cannot open stderr stream');
     }
 
     protected function tearDown(): void
@@ -72,6 +76,7 @@ final class AnalyzeCommandTest extends TestCase
     {
         $this->execute('--check', '--quiet', '--format=gitlab');
 
+        /** @var list<array{location: array{path: string, lines: array{begin: int}}}> $report */
         $report = json_decode($this->stdout(), true);
         $this->assertSame('src/Billing/Domain/Invoice.php', $report[0]['location']['path']);
         $this->assertSame(14, $report[0]['location']['lines']['begin']);
@@ -121,10 +126,19 @@ final class AnalyzeCommandTest extends TestCase
 
         $this->assertStringContainsString('Class cycles: 1', $this->stdout());
         $this->assertStringContainsString('Most depended upon classes', $this->stdout());
+        /** @var Graph $graph */
         $graph = json_decode((string) file_get_contents($this->workDir . '/graph.json'), true);
         $cycles = array_column(array_filter($graph['nodes'], fn(array $node) => $node['type'] === 'class'), 'cycle', 'id');
         $this->assertSame(0, $cycles['Shop\Billing\Domain\Invoice']);
         $this->assertNull($cycles['Shop\Legacy\Helpers']);
+    }
+
+    public function testRejectsInvalidConfigValues(): void
+    {
+        $this->useConfig(['cycles' => ['level' => 'class', 'depth' => '3']]);
+
+        $this->assertSame(AnalyzeCommand::INVALID_USAGE, $this->execute('--check', '--quiet'));
+        $this->assertStringContainsString('"cycles.depth" must be an integer', $this->stderr());
     }
 
     public function testRejectsUnknownOptions(): void
@@ -144,6 +158,7 @@ final class AnalyzeCommandTest extends TestCase
         $exitCode = $this->execute('--quiet', '--output=graph.json');
 
         $this->assertSame(AnalyzeCommand::SUCCESS, $exitCode);
+        /** @var Graph $graph */
         $graph = json_decode((string) file_get_contents($this->workDir . '/graph.json'), true);
         $this->assertSame(4, $graph['stats']['totalClasses']);
     }
@@ -162,6 +177,13 @@ final class AnalyzeCommandTest extends TestCase
     {
         $config += ['paths' => ['src'], 'baseline' => 'baseline.json'];
         file_put_contents($this->workDir . '/php-deps.php', '<?php return ' . var_export($config, true) . ';');
+    }
+
+    private function stderr(): string
+    {
+        rewind($this->stderr);
+
+        return (string) stream_get_contents($this->stderr);
     }
 
     private function stdout(): string

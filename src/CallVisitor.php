@@ -13,6 +13,8 @@ use PhpParser\NodeVisitorAbstract;
  * Expects PhpParser's NameResolver to run before it in the same traverser.
  *
  * Edges are raw: targets may be external or inherited members, GraphBuilder sorts them out.
+ *
+ * @phpstan-import-type Edge from GraphBuilder
  */
 final class CallVisitor extends NodeVisitorAbstract
 {
@@ -20,7 +22,7 @@ final class CallVisitor extends NodeVisitorAbstract
     private const CONTAINER_METHODS = ['make', 'makewith'];
     private const CONTAINER_CLASSES = ['Illuminate\Support\Facades\App', 'App', 'Illuminate\Container\Container'];
 
-    /** @var array<array{source: string, target: string, type: string, line: int}> */
+    /** @var list<Edge> */
     private array $edges = [];
 
     /** @var ClassScope[] */
@@ -36,7 +38,7 @@ final class CallVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * @return array<array{source: string, target: string, type: string, line: int}>
+     * @return list<Edge>
      */
     public function getEdges(): array
     {
@@ -160,6 +162,9 @@ final class CallVisitor extends NodeVisitorAbstract
     private function collectEdges(Node $node): void
     {
         $frame = end($this->frames);
+        if ($frame === false) {
+            return;
+        }
         $from = $frame['scope']->class . '::' . $frame['method'];
         $line = $node->getStartLine();
 

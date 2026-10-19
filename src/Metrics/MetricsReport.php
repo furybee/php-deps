@@ -4,8 +4,15 @@ declare(strict_types=1);
 
 namespace DepsGraph\Metrics;
 
+use DepsGraph\GraphBuilder;
+
 /**
  * Text summary of the metrics added by GraphMetrics.
+ *
+ * @phpstan-import-type Graph from GraphBuilder
+ * @phpstan-import-type ClassNode from GraphBuilder
+ * @phpstan-import-type Cycle from GraphBuilder
+ * @phpstan-import-type NamespaceMetrics from GraphBuilder
  */
 final class MetricsReport
 {
@@ -13,21 +20,26 @@ final class MetricsReport
     private const MIN_NAMESPACE_SIZE = 5;
 
     /**
-     * @param array<string, mixed> $graph enriched by GraphMetrics
+     * @param Graph $graph enriched by GraphMetrics
      */
     public function render(array $graph): string
     {
-        $classes = array_values(array_filter($graph['nodes'], static fn(array $node) => $node['type'] === 'class'));
+        $classes = [];
+        foreach ($graph['nodes'] as $node) {
+            if ($node['type'] === 'class') {
+                $classes[] = $node;
+            }
+        }
 
-        return $this->cycles('Class cycles', $graph['cycles'], 'classes')
-            . $this->cycles('Namespace cycles', $graph['namespaceCycles'], 'namespaces')
+        return $this->cycles('Class cycles', $graph['cycles'] ?? [], 'classes')
+            . $this->cycles('Namespace cycles', $graph['namespaceCycles'] ?? [], 'namespaces')
             . $this->ranking('Most depended upon classes (afferent coupling)', $classes, 'ca')
             . $this->ranking('Classes depending on the most classes (efferent coupling)', $classes, 'ce')
-            . $this->namespaceDistances($graph['namespaces']);
+            . $this->namespaceDistances($graph['namespaces'] ?? []);
     }
 
     /**
-     * @param array<array{members: string[], path: string[]}> $cycles
+     * @param list<Cycle> $cycles
      */
     private function cycles(string $title, array $cycles, string $unit): string
     {
@@ -40,25 +52,35 @@ final class MetricsReport
     }
 
     /**
-     * @param array<array<string, mixed>> $classes
+     * @param list<ClassNode> $classes
+     * @param 'ca'|'ce' $metric
      */
     private function ranking(string $title, array $classes, string $metric): string
     {
-        usort($classes, static fn(array $a, array $b) => $b['metrics'][$metric] <=> $a['metrics'][$metric]);
+        usort($classes, static fn(array $a, array $b) => self::metric($b, $metric) <=> self::metric($a, $metric));
 
         $output = "\n{$title}\n";
         foreach (array_slice($classes, 0, self::TOP) as $class) {
-            $output .= sprintf("  %5d  %s\n", $class['metrics'][$metric], $class['id']);
+            $output .= sprintf("  %5d  %s\n", self::metric($class, $metric), $class['id']);
         }
 
         return $output;
     }
 
     /**
+     * @param ClassNode $class
+     * @param 'ca'|'ce' $metric
+     */
+    private static function metric(array $class, string $metric): int
+    {
+        return $class['metrics'][$metric] ?? 0;
+    }
+
+    /**
      * Concrete and stable (hard to change, everything depends on it) or abstract and unstable (abstractions nobody uses).
      * Namespaces depending on nothing (enums, DTOs, exceptions) are concrete and stable by nature, they would fill the list.
      *
-     * @param array<array<string, mixed>> $namespaces
+     * @param list<NamespaceMetrics> $namespaces
      */
     private function namespaceDistances(array $namespaces): string
     {

@@ -5,13 +5,18 @@ declare(strict_types=1);
 namespace DepsGraph\Tests;
 
 use DepsGraph\Analyzer;
+use DepsGraph\GraphBuilder;
 use PHPUnit\Framework\TestCase;
 
+/**
+ * @phpstan-import-type Graph from GraphBuilder
+ * @phpstan-import-type ClassNode from GraphBuilder
+ */
 final class AnalyzerTest extends TestCase
 {
     private const SERVICE = 'Acme\Services\UserService';
 
-    /** @var array{nodes: array<mixed>, edges: array<mixed>, stats: array<string, mixed>} */
+    /** @var Graph */
     private static array $graph;
 
     public static function setUpBeforeClass(): void
@@ -74,7 +79,7 @@ final class AnalyzerTest extends TestCase
 
     public function testKeepsAnonymousClassesOutOfTheEnclosingClass(): void
     {
-        $methods = $this->node(self::SERVICE)['methods'];
+        $methods = $this->classNode(self::SERVICE)['methods'];
 
         $this->assertSame(['__construct', 'handle', 'documented', 'afterAnonymousClass'], $methods);
         $this->assertEdge(self::SERVICE . '::handle', self::SERVICE . '::afterAnonymousClass', 'calls');
@@ -152,16 +157,16 @@ final class AnalyzerTest extends TestCase
     }
 
     /**
-     * @return array<string, mixed>
+     * @return ClassNode
      */
-    private function node(string $id): array
+    private function classNode(string $id): array
     {
         foreach (self::$graph['nodes'] as $node) {
-            if ($node['id'] === $id) {
+            if ($node['type'] === 'class' && $node['id'] === $id) {
                 return $node;
             }
         }
 
-        $this->fail("Node {$id} not found");
+        $this->fail("Class node {$id} not found");
     }
 }

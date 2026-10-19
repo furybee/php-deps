@@ -7,6 +7,9 @@ namespace DepsGraph\Architecture;
 use DepsGraph\Metrics\CycleDetector;
 use DepsGraph\Metrics\DependencyMap;
 
+/**
+ * @phpstan-import-type MinimalGraph from DependencyMap
+ */
 final class CycleRuleChecker
 {
     public function __construct(
@@ -16,7 +19,7 @@ final class CycleRuleChecker
     }
 
     /**
-     * @param array{nodes: array<array<string, mixed>>, edges: array<array{source: string, target: string, type: string, line?: int}>} $graph
+     * @param MinimalGraph $graph
      * @return CycleViolation[]
      */
     public function check(array $graph): array
@@ -32,7 +35,7 @@ final class CycleRuleChecker
         $files = [];
         foreach ($graph['nodes'] as $node) {
             if ($node['type'] === 'class') {
-                $files[$node['id']] = (string) ($node['file'] ?? '');
+                $files[$node['id']] = $node['file'] ?? '';
             }
         }
 

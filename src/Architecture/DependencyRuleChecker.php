@@ -4,9 +4,13 @@ declare(strict_types=1);
 
 namespace DepsGraph\Architecture;
 
+use DepsGraph\Metrics\DependencyMap;
+
 /**
  * Checks graph edges against the allowed layer dependencies.
  * Classes outside every layer are not checked, nor are layers without rules.
+ *
+ * @phpstan-import-type MinimalGraph from DependencyMap
  */
 final class DependencyRuleChecker
 {
@@ -15,7 +19,7 @@ final class DependencyRuleChecker
     }
 
     /**
-     * @param array{nodes: array<array<string, mixed>>, edges: array<array{source: string, target: string, type: string, line?: int}>} $graph
+     * @param MinimalGraph $graph
      * @return Violation[] one per class pair, at its first occurrence
      */
     public function check(array $graph): array
@@ -24,7 +28,7 @@ final class DependencyRuleChecker
         $files = [];
         foreach ($graph['nodes'] as $node) {
             if ($node['type'] === 'class') {
-                $files[$node['id']] = (string) ($node['file'] ?? '');
+                $files[$node['id']] = $node['file'] ?? '';
             }
         }
 
