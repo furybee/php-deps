@@ -25,6 +25,7 @@
 - **Force-directed layout** — ForceAtlas2 algorithm for natural clustering
 - **Search & filter** — find classes instantly, filter by layer or edge type
 - **No build step viewer** — static HTML, libraries loaded from a CDN, works from `file://` with a file picker
+- **Architecture rules** — forbid dependencies between layers, fail CI on new violations, baseline for existing ones
 - **Laravel optimized** — understands Laravel patterns (service injection, `app()` helper, Form Requests)
 
 ## Requirements
@@ -79,7 +80,11 @@ php analyze.php [--root=.] [--dir=app] [--dir=app-modules] [--exclude=vendor,tes
 | `--exclude` | `vendor,node_modules,.git,.claude,storage,bootstrap/cache` | Comma-separated. A bare name (`vendor`) matches a directory at any depth, a path (`bootstrap/cache`) is relative to the root |
 | `--output` | `<php-deps>/output/graph.json` | JSON output, relative to the current directory |
 | `--pretty` | off | Pretty-print the JSON (about twice as big) |
-| `--quiet` | off | Only print errors |
+| `--config` | `<root>/php-deps.php` if present | Architecture rules file, see below |
+| `--check` | off | Check the rules, exit 1 on violations not in the baseline |
+| `--format` | `text` | Check report: `text`, `github` (Actions annotations) or `gitlab` (Code Quality report) |
+| `--generate-baseline` | off | Accept every current violation into the baseline |
+| `--quiet` | off | Only print errors and the check report |
 
 ### Examples
 
@@ -89,6 +94,55 @@ php analyze.php --dir=app --dir=app-modules
 
 # Analyze another project without leaving php-deps
 php analyze.php --root=../my-project --dir=src --output=output/my-project.json
+```
+
+## Architecture Rules
+
+Describe your layers and their allowed dependencies in `php-deps.php` at the project root
+(see [`examples/clean-architecture.php`](examples/clean-architecture.php)):
+
+```php
+return [
+    'paths' => ['src'],
+    'layers' => [
+        'Domain' => ['**\Domain\**'],
+        'Application' => ['**\Application\**'],
+        'Infrastructure' => ['**\Infrastructure\**'],
+        'Model' => ['App\*'],
+    ],
+    'rules' => [
+        'Domain' => [],
+        'Application' => ['Domain', 'Model'],
+        'Infrastructure' => ['Domain', 'Application', 'Model'],
+    ],
+];
+```
+
+- Layer patterns are FQCN globs: `*` stays within one namespace segment, `**` crosses segments.
+  A class belongs to the first layer it matches.
+- A layer may always depend on itself. A layer missing from `rules` is unrestricted.
+  Classes in no layer, vendor and PHP classes are not checked.
+- Every edge counts as a dependency, including types only used in signatures or PHPDoc
+  and `Foo::BAR` / `instanceof` / `catch` references.
+
+```bash
+php analyze.php --check                       # text report, exit 1 on violations
+php analyze.php --generate-baseline           # accept the current violations
+php analyze.php --check --format=gitlab > gl-code-quality-report.json
+```
+
+The baseline lists violating class pairs, not lines, so moving code does not resurface them.
+The text report tells when baseline entries no longer occur.
+
+GitLab CI:
+
+```yaml
+architecture:
+  script: php vendor/bin/analyze.php --check --format=gitlab > gl-code-quality-report.json
+  artifacts:
+    when: always
+    reports:
+      codequality: gl-code-quality-report.json
 ```
 
 ## What It Detects
@@ -111,6 +165,11 @@ php analyze.php --root=../my-project --dir=src --output=output/my-project.json
 | `extends` | `class Foo extends Bar` | Inheritance |
 | `implements` | `class Foo implements Bar` | Interface implementation |
 | `uses_trait` | `use SoftDeletes` | Trait usage |
+| `uses_type` | `function find(): User` | Type only used in a signature or PHPDoc |
+| `references` | `Status::Active`, `catch (FooException)` | Class used without being called |
+
+Every edge carries the `line` where it occurs. `uses_type` and `references` are only kept
+between two classes that no other edge links already.
 
 Only classes found in the scanned directories become nodes: edges towards vendor or PHP
 built-in classes are dropped. A call to a method that is inherited (parent class, trait,
@@ -176,7 +235,9 @@ php-deps/
 │   ├── TypeResolver.php     # Resolves type hints and PHPDoc types to FQCNs
 │   ├── ClassHierarchy.php   # Member lookups through parents, traits, interfaces
 │   ├── LayerDetector.php    # Infers the architectural layer of a class
-│   └── GraphBuilder.php     # Builds the final JSON graph (nodes + edges)
+│   ├── GraphBuilder.php     # Builds the final JSON graph (nodes + edges)
+│   ├── Architecture/        # Layer rules, baseline, text/GitHub/GitLab reports
+│   └── Console/             # CLI command
 ├── tests/                   # PHPUnit tests and fixture projects
 ├── viewer/
 │   ├── index.html           # Standalone viewer (works with file://)

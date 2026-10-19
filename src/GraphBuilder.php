@@ -16,20 +16,30 @@ final class GraphBuilder
         'traits' => 'uses_trait',
     ];
 
+    /**
+     * Only emitted when no other edge already links the two classes,
+     * otherwise every `Foo::class` next to `new Foo()` would double the edge.
+     */
+    private const WEAK_EDGE_TYPES = ['references', 'uses_type'];
+
     /** @var array<string, true> */
     private array $edgeKeys = [];
 
-    /** @var array<array{source: string, target: string, type: string}> */
+    /** @var array<string, true> "SourceClass|TargetClass" */
+    private array $linkedClasses = [];
+
+    /** @var array<array{source: string, target: string, type: string, line: int}> */
     private array $graphEdges = [];
 
     /**
      * @param array<string, array<string, mixed>> $classes keyed by FQCN
-     * @param array<array{source: string, target: string, type: string}> $rawEdges
+     * @param array<array{source: string, target: string, type: string, line: int}> $rawEdges
      * @return array{nodes: array<mixed>, edges: array<mixed>, stats: array<string, mixed>}
      */
     public function build(array $classes, array $rawEdges, ClassHierarchy $hierarchy): array
     {
         $this->edgeKeys = [];
+        $this->linkedClasses = [];
         $this->graphEdges = [];
         $nodes = [];
 
@@ -38,40 +48,29 @@ final class GraphBuilder
             foreach ($data['methods'] as $methodName => $methodData) {
                 $nodes[] = $this->methodNode($fqcn, (string) $methodName, $methodData, $data['layer']);
             }
-
-            foreach (self::CLASS_LEVEL_EDGES as $field => $type) {
-                foreach ($data[$field] as $target) {
-                    if ($hierarchy->has($target)) {
-                        $this->addEdge($fqcn, $target, $type);
-                    }
-                }
-            }
-
-            foreach ($data['constructorParams'] as $paramType) {
-                if ($paramType !== null && $paramType !== $fqcn && $hierarchy->has($paramType)) {
-                    $this->addEdge($fqcn, $paramType, 'depends_on');
-                }
-            }
+            $this->addClassLevelEdges($fqcn, $data, $hierarchy);
         }
 
         $collapsedCalls = 0;
+        $weakEdges = $this->signatureEdges($classes);
         foreach ($rawEdges as $edge) {
-            [$targetClass, $targetMethod] = array_pad(explode('::', $edge['target'], 2), 2, null);
-            if (!$hierarchy->has($targetClass)) {
+            if (in_array($edge['type'], self::WEAK_EDGE_TYPES, true)) {
+                $weakEdges[] = $edge;
                 continue;
             }
 
-            if ($targetMethod === null) {
-                $this->addEdge($edge['source'], $targetClass, $edge['type']);
-                continue;
+            $target = $this->resolveTarget($edge['target'], $hierarchy, $collapsedCalls);
+            if ($target !== null) {
+                $this->addEdge($edge['source'], $target, $edge['type'], $edge['line']);
             }
+        }
 
-            $declaring = $hierarchy->findMethod($targetClass, $targetMethod);
-            if ($declaring === null) {
-                $collapsedCalls++;
+        foreach ($weakEdges as $edge) {
+            $target = $this->resolveTarget($edge['target'], $hierarchy, $collapsedCalls);
+            $pair = self::classOf($edge['source']) . '|' . ($target === null ? '' : self::classOf($target));
+            if ($target !== null && !isset($this->linkedClasses[$pair]) && self::classOf($edge['source']) !== self::classOf($target)) {
+                $this->addEdge($edge['source'], $target, $edge['type'], $edge['line']);
             }
-            $target = $declaring === null ? $targetClass : $declaring[0] . '::' . $declaring[1];
-            $this->addEdge($edge['source'], $target, $edge['type']);
         }
 
         return [
@@ -79,6 +78,81 @@ final class GraphBuilder
             'edges' => $this->graphEdges,
             'stats' => $this->stats($classes, $nodes, $collapsedCalls),
         ];
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     */
+    private function addClassLevelEdges(string $fqcn, array $data, ClassHierarchy $hierarchy): void
+    {
+        foreach (self::CLASS_LEVEL_EDGES as $field => $type) {
+            foreach ($data[$field] as $target) {
+                if ($hierarchy->has($target)) {
+                    $this->addEdge($fqcn, $target, $type, $data['line']);
+                }
+            }
+        }
+
+        $constructorLine = $data['methods']['__construct']['line'] ?? $data['line'];
+        foreach ($data['constructorParams'] as $paramType) {
+            if ($paramType !== null && $paramType !== $fqcn && $hierarchy->has($paramType)) {
+                $this->addEdge($fqcn, $paramType, 'depends_on', $constructorLine);
+            }
+        }
+    }
+
+    /**
+     * Types used in method signatures and property declarations.
+     *
+     * @param array<string, array<string, mixed>> $classes
+     * @return array<array{source: string, target: string, type: string, line: int}>
+     */
+    private function signatureEdges(array $classes): array
+    {
+        $edges = [];
+        foreach ($classes as $fqcn => $data) {
+            foreach ($data['properties'] as $type) {
+                $edges[] = ['source' => $fqcn, 'target' => $type, 'type' => 'uses_type', 'line' => $data['line']];
+            }
+
+            foreach ($data['methods'] as $methodName => $method) {
+                $types = array_filter([...array_values($method['params']), $method['returnType']]);
+                foreach ($types as $type) {
+                    $edges[] = ['source' => $fqcn . '::' . $methodName, 'target' => $type, 'type' => 'uses_type', 'line' => $method['line']];
+                }
+            }
+        }
+
+        return $edges;
+    }
+
+    /**
+     * Inherited methods point to their declaring class; methods declared nowhere
+     * in the scanned code (magic, vendor parent) collapse onto the class node.
+     */
+    private function resolveTarget(string $target, ClassHierarchy $hierarchy, int &$collapsedCalls): ?string
+    {
+        [$targetClass, $targetMethod] = array_pad(explode('::', $target, 2), 2, null);
+        if (!$hierarchy->has($targetClass)) {
+            return null;
+        }
+
+        if ($targetMethod === null) {
+            return $targetClass;
+        }
+
+        $declaring = $hierarchy->findMethod($targetClass, $targetMethod);
+        if ($declaring === null) {
+            $collapsedCalls++;
+            return $targetClass;
+        }
+
+        return $declaring[0] . '::' . $declaring[1];
+    }
+
+    private static function classOf(string $nodeId): string
+    {
+        return explode('::', $nodeId, 2)[0];
     }
 
     /**
@@ -119,7 +193,7 @@ final class GraphBuilder
         ];
     }
 
-    private function addEdge(string $source, string $target, string $type): void
+    private function addEdge(string $source, string $target, string $type, int $line): void
     {
         $key = $source . '|' . $type . '|' . $target;
         if (isset($this->edgeKeys[$key])) {
@@ -127,7 +201,8 @@ final class GraphBuilder
         }
 
         $this->edgeKeys[$key] = true;
-        $this->graphEdges[] = ['source' => $source, 'target' => $target, 'type' => $type];
+        $this->linkedClasses[self::classOf($source) . '|' . self::classOf($target)] = true;
+        $this->graphEdges[] = ['source' => $source, 'target' => $target, 'type' => $type, 'line' => $line];
     }
 
     /**
