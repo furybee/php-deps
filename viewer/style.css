@@ -12,10 +12,16 @@ body {
   height: 100vh;
 }
 
+/* Next to the sidebar rather than under it, so no node hides behind it */
 #sigma-container {
   position: absolute;
-  inset: 0;
+  inset: 0 0 0 280px;
   background: #0f1117;
+  transition: left 0.3s ease;
+}
+
+body.sidebar-collapsed #sigma-container {
+  left: 0;
 }
 
 /* Sidebar */
@@ -31,7 +37,8 @@ body {
   z-index: 10;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   transition: transform 0.3s ease;
 }
 
@@ -204,8 +211,6 @@ body {
 /* Filters */
 #filters {
   padding: 12px 16px;
-  overflow-y: auto;
-  flex: 1;
 }
 
 .filter-header {
@@ -551,4 +556,138 @@ body {
 
 ::-webkit-scrollbar-thumb:hover {
   background: #484f58;
+}
+
+/* ─── Node size, cycles, settings ───────────────────────────────── */
+#size-mode,
+#cycles-section {
+  padding: 12px 16px;
+  border-bottom: 1px solid #30363d;
+}
+
+#size-mode {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+#size-mode label,
+#settings summary,
+#settings label {
+  font-size: 11px;
+  color: #8b949e;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+#size-mode select,
+#settings input {
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  color: #c9d1d9;
+  font-size: 12px;
+  padding: 4px 8px;
+}
+
+#cycle-list {
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.cycle-item {
+  display: flex;
+  gap: 8px;
+  padding: 3px 4px;
+  border-radius: 4px;
+  font-size: 11px;
+  color: #c9d1d9;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.cycle-item:hover {
+  background: #21262d;
+}
+
+.cycle-item.active {
+  background: #f8514922;
+}
+
+.cycle-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cycle-size {
+  flex-shrink: 0;
+  min-width: 28px;
+  text-align: right;
+  color: #f85149;
+  font-variant-numeric: tabular-nums;
+}
+
+#settings {
+  padding: 12px 16px;
+  border-top: 1px solid #30363d;
+}
+
+#settings summary {
+  cursor: pointer;
+}
+
+#settings label {
+  display: block;
+  margin: 10px 0 4px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+#settings input {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: monospace;
+}
+
+.metrics-row {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 12px;
+  font-size: 11px;
+  color: #8b949e;
+}
+
+.metrics-row strong {
+  color: #c9d1d9;
+  font-variant-numeric: tabular-nums;
+}
+
+.cycle-badge {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: #f8514922;
+  color: #f85149;
+  font-size: 11px;
+}
+
+.cycle-badge button,
+.editor-link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: #58a6ff;
+  font-size: 11px;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.editor-link {
+  display: inline-block;
+  margin-bottom: 12px;
+  font-family: monospace;
+  word-break: break-all;
 }

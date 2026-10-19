@@ -1,5 +1,5 @@
 /**
- * Laravel Dependency Graph Viewer
+ * PHP Deps viewer
  * Uses Sigma.js v2 + Graphology + ForceAtlas2
  */
 (function () {
@@ -52,6 +52,9 @@
     references: "#52525B44",
   };
 
+  const DEFAULT_EDITOR_URL = "phpstorm://open?file={file}&line={line}";
+  const MAX_LISTED_CYCLES = 15;
+
   // State
   let graphData = null;
   let graph = null;
@@ -68,6 +71,14 @@
   let activeClassTypeFilters = {};
   let hoveredNeighbors = new Set();
   let selectedNeighbors = new Set();
+  let nodesById = {};
+  let sizeBy = "methods";
+  let highlightedCycle = null; // index in graphData.cycles
+  const afterLayout = [];
+
+  function escapeHtml(value) {
+    return String(value).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  }
 
   // ─── Load data ──────────────────────────────────────────────────────
   async function loadData() {
@@ -76,14 +87,23 @@
       const resp = await fetch("graph.json");
       if (resp.ok) {
         graphData = await resp.json();
-        init();
-        return;
       }
     } catch (_) {
       // Expected to fail on file:// — show file picker
     }
 
-    showFilePicker();
+    if (!graphData) {
+      showFilePicker();
+      return;
+    }
+
+    try {
+      init();
+    } catch (err) {
+      document.getElementById("loading").innerHTML =
+        `<div style="color:#f87171;font-size:14px;">Cannot display the graph: ${escapeHtml(err.message)}</div>`;
+      throw err;
+    }
   }
 
   function showFilePicker() {
@@ -194,6 +214,7 @@
 
   // ─── Initialize ─────────────────────────────────────────────────────
   function init() {
+    graphData.nodes.forEach((n) => (nodesById[n.id] = n));
     assignLayerColors(graphData.stats);
     commonPrefix = detectCommonPrefix();
     buildGraph();
@@ -203,6 +224,9 @@
     setupViewMode();
     setupLayoutControls();
     setupInfoPanel();
+    setupSizeMode();
+    setupCycles();
+    setupSettings();
     updateBreadcrumb();
 
     document.getElementById("loading").classList.add("hidden");
@@ -415,7 +439,7 @@
 
       const isClass = node.type === "class";
       const color = LAYER_COLORS[node.layer] || LAYER_COLORS.Other;
-      const size = isClass ? Math.max(3, Math.min(15, (node.methodCount || 1) * 0.8)) : 2;
+      const size = isClass ? classNodeSize(node) : 2;
 
       graph.addNode(node.id, {
         x: Math.random() * 100,
@@ -431,6 +455,9 @@
         methodCount: node.methodCount || 0,
         file: node.file || "",
         line: node.line || 0,
+        ownerClass: node.class || null,
+        metrics: node.metrics || null,
+        cycle: node.cycle ?? null,
         forceLabel: false,
       });
     });
@@ -467,6 +494,13 @@
     });
   }
 
+  function classNodeSize(node) {
+    if (sizeBy === "dependents" && node.metrics) {
+      return Math.max(3, Math.min(20, 3 + Math.sqrt(node.metrics.ca) * 1.2));
+    }
+    return Math.max(3, Math.min(15, (node.methodCount || 1) * 0.8));
+  }
+
   // ─── Setup Sigma renderer ──────────────────────────────────────────
   function setupRenderer() {
     const container = document.getElementById("sigma-container");
@@ -486,6 +520,8 @@
       edgeReducer: reduceEdge,
       nodeReducer: reduceNode,
       zIndex: true,
+      // Keeps nodes clear of the floating layout buttons and breadcrumb
+      stagePadding: 80,
       minCameraRatio: 0.01,
       maxCameraRatio: 10,
     });
@@ -567,6 +603,14 @@
     if (data.classType && activeClassTypeFilters[data.classType] === false) {
       res.hidden = true;
       return res;
+    }
+
+    if (highlightedCycle !== null && viewMode !== "namespaces") {
+      const owner = data.nodeType === "method" ? data.ownerClass : node;
+      if (nodesById[owner]?.cycle !== highlightedCycle) {
+        res.hidden = true;
+        return res;
+      }
     }
 
     // Selected node: show only the node + its direct connections, hide everything else
@@ -723,6 +767,11 @@
     const sidebar = document.getElementById("sidebar");
     toggle.addEventListener("click", () => {
       sidebar.classList.toggle("collapsed");
+      document.body.classList.toggle("sidebar-collapsed", sidebar.classList.contains("collapsed"));
+    });
+    document.getElementById("sigma-container").addEventListener("transitionend", () => {
+      renderer.resize();
+      renderer.refresh();
     });
   }
 
@@ -837,13 +886,37 @@
 
   function focusNode(nodeId) {
     if (!graph.hasNode(nodeId)) return;
+
+    const ownerClass = graph.getNodeAttribute(nodeId, "ownerClass") || nodeId;
+    if (highlightedCycle !== null && nodesById[ownerClass]?.cycle !== highlightedCycle) {
+      setHighlightedCycle(null);
+    }
     selectedNode = nodeId;
     selectedNeighbors = new Set(graph.neighbors(nodeId));
     showInfoPanel(nodeId);
     renderer.refresh({ skipIndexation: true });
+    fitCamera([nodeId, ...selectedNeighbors]);
+  }
 
-    // Reset camera to fit all visible nodes (selected + neighbors)
-    renderer.getCamera().animatedReset({ duration: 400 });
+  /** Frames the given nodes, using Sigma's normalized display coordinates (the camera's own space). */
+  function fitCamera(nodeIds) {
+    const points = nodeIds.map((id) => renderer.getNodeDisplayData(id)).filter(Boolean);
+    if (points.length === 0) {
+      renderer.getCamera().animatedReset({ duration: 400 });
+      return;
+    }
+
+    const xs = points.map((p) => p.x);
+    const ys = points.map((p) => p.y);
+    const extent = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+    renderer.getCamera().animate(
+      {
+        x: (Math.min(...xs) + Math.max(...xs)) / 2,
+        y: (Math.min(...ys) + Math.max(...ys)) / 2,
+        ratio: Math.min(1, Math.max(0.05, extent * 1.3)),
+      },
+      { duration: 400 },
+    );
   }
 
   // ─── View mode ──────────────────────────────────────────────────────
@@ -954,6 +1027,16 @@
   function stopLayout() {
     fa2Running = false;
     document.getElementById("btn-layout").classList.remove("active");
+    afterLayout.splice(0).forEach((callback) => callback());
+  }
+
+  /** Runs once nodes stop moving, positions read earlier would be stale. */
+  function whenLayoutSettles(callback) {
+    if (fa2Running) {
+      afterLayout.push(callback);
+    } else {
+      callback();
+    }
   }
 
   function setupLayoutControls() {
@@ -1065,7 +1148,7 @@
       if (contained.length > 0) {
         html += `<div class="connections-section"><h4>Classes (${contained.length})</h4>`;
         contained.slice(0, 30).forEach((classId) => {
-          const classNode = graphData.nodes.find((n) => n.id === classId);
+          const classNode = nodesById[classId];
           if (!classNode) return;
           const cColor = LAYER_COLORS[classNode.layer] || LAYER_COLORS.Other;
           html += `<div class="connection-item" data-id="${classId}">
@@ -1123,6 +1206,8 @@
           <span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:600;text-transform:uppercase;background:${color}33;color:${color}">${attrs.layer}</span>
           ${attrs.classType ? `<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;background:#21262d;color:#8b949e;margin-left:4px">${attrs.classType}</span>` : ""}
         </div>
+        ${editorLinkHtml(attrs)}
+        ${metricsHtml(attrs)}
       `;
 
       const inEdges = graph.inEdges(nodeId);
@@ -1186,6 +1271,10 @@
     body.innerHTML = html;
     panel.classList.add("visible");
 
+    body.querySelector("[data-cycle]")?.addEventListener("click", (e) => {
+      isolateCycle(Number(e.currentTarget.dataset.cycle));
+    });
+
     // Click on connections to navigate
     body.querySelectorAll(".connection-item[data-id]").forEach((item) => {
       item.addEventListener("click", () => {
@@ -1213,6 +1302,115 @@
       hideInfoPanel();
       renderer.refresh({ skipIndexation: true });
     });
+  }
+
+  function metricsHtml(attrs) {
+    if (!attrs.metrics) return "";
+
+    let html = `<div class="metrics-row" title="Ca: classes depending on it · Ce: classes it depends on · Instability: Ce / (Ca + Ce)">
+      <span>Ca <strong>${attrs.metrics.ca}</strong></span>
+      <span>Ce <strong>${attrs.metrics.ce}</strong></span>
+      <span>Instability <strong>${attrs.metrics.instability.toFixed(2)}</strong></span>
+    </div>`;
+
+    if (attrs.cycle !== null && graphData.cycles?.[attrs.cycle]) {
+      const size = graphData.cycles[attrs.cycle].members.length;
+      html += `<div class="cycle-badge">
+        <span>In a dependency cycle of ${size} classes</span>
+        <button data-cycle="${attrs.cycle}">Isolate</button>
+      </div>`;
+    }
+
+    return html;
+  }
+
+  // ─── Editor links ───────────────────────────────────────────────────
+  function editorUrl(file, line) {
+    const projectPath = (localStorage.getItem("php-deps.projectPath") ?? graphData.root ?? "").replace(/\/$/, "");
+    const template = localStorage.getItem("php-deps.editorUrl") || DEFAULT_EDITOR_URL;
+    const path = projectPath ? `${projectPath}/${file}` : file;
+
+    return template.replace("{file}", encodeURI(path)).replace("{line}", String(line || 1));
+  }
+
+  function editorLinkHtml(attrs) {
+    const file = attrs.nodeType === "method" ? nodesById[attrs.ownerClass]?.file : attrs.file;
+    if (!file) return "";
+
+    return `<a class="editor-link" href="${escapeHtml(editorUrl(file, attrs.line))}">${escapeHtml(file)}:${attrs.line || 1} ↗</a>`;
+  }
+
+  function setupSettings() {
+    const editorInput = document.getElementById("editor-url");
+    const pathInput = document.getElementById("project-path");
+    editorInput.value = localStorage.getItem("php-deps.editorUrl") || DEFAULT_EDITOR_URL;
+    pathInput.value = localStorage.getItem("php-deps.projectPath") ?? graphData.root ?? "";
+    pathInput.placeholder = graphData.root || "/path/to/project";
+
+    editorInput.addEventListener("change", () => localStorage.setItem("php-deps.editorUrl", editorInput.value.trim()));
+    pathInput.addEventListener("change", () => localStorage.setItem("php-deps.projectPath", pathInput.value.trim()));
+  }
+
+  // ─── Node size ──────────────────────────────────────────────────────
+  function setupSizeMode() {
+    const select = document.getElementById("size-by");
+    select.value = sizeBy;
+    select.disabled = !graphData.nodes.some((n) => n.metrics);
+    select.addEventListener("change", () => {
+      sizeBy = select.value;
+      if (viewMode === "namespaces") return;
+      graph.forEachNode((id, attrs) => {
+        if (attrs.nodeType === "class") graph.setNodeAttribute(id, "size", classNodeSize(nodesById[id]));
+      });
+    });
+  }
+
+  // ─── Cycles ─────────────────────────────────────────────────────────
+  function setupCycles() {
+    const cycles = graphData.cycles || [];
+    if (cycles.length === 0) return;
+
+    document.getElementById("cycles-section").hidden = false;
+    const listEl = document.getElementById("cycle-list");
+    listEl.innerHTML = cycles.slice(0, MAX_LISTED_CYCLES).map((cycle, index) => {
+      const path = cycle.path.map((id) => nodesById[id]?.label || id);
+      return `<div class="cycle-item" data-cycle-index="${index}" title="${escapeHtml([...cycle.path, cycle.path[0]].join(" → "))}">
+        <span class="cycle-size">${cycle.members.length}</span>
+        <span class="cycle-path">${escapeHtml([...path, path[0]].join(" → "))}</span>
+      </div>`;
+    }).join("") + (cycles.length > MAX_LISTED_CYCLES ? `<div style="color:#484f58;font-size:11px;padding:4px 0">...+${cycles.length - MAX_LISTED_CYCLES} more</div>` : "");
+
+    listEl.querySelectorAll("[data-cycle-index]").forEach((item) => {
+      item.addEventListener("click", () => isolateCycle(Number(item.dataset.cycleIndex)));
+    });
+    document.getElementById("cycle-clear").addEventListener("click", () => isolateCycle(null));
+  }
+
+  function setHighlightedCycle(index) {
+    highlightedCycle = index;
+    document.getElementById("cycle-clear").hidden = index === null;
+    document.querySelectorAll("#cycle-list [data-cycle-index]").forEach((item) => {
+      item.classList.toggle("active", Number(item.dataset.cycleIndex) === index);
+    });
+  }
+
+  function isolateCycle(index) {
+    setHighlightedCycle(index);
+
+    if (index !== null && viewMode === "namespaces") {
+      document.querySelector('.view-btn[data-mode="classes"]').click();
+    }
+
+    selectedNode = null;
+    selectedNeighbors.clear();
+    hideInfoPanel();
+    renderer.refresh({ skipIndexation: true });
+
+    if (index === null) {
+      renderer.getCamera().animatedReset({ duration: 400 });
+      return;
+    }
+    whenLayoutSettles(() => fitCamera(graphData.cycles[index].members.filter((id) => graph.hasNode(id))));
   }
 
   // ─── Boot ───────────────────────────────────────────────────────────

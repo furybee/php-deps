@@ -39,7 +39,7 @@ final class Analyzer
     }
 
     /**
-     * @return array{nodes: array<mixed>, edges: array<mixed>, stats: array<string, mixed>}
+     * @return array{root: string, nodes: array<mixed>, edges: array<mixed>, stats: array<string, mixed>}
      */
     public function analyze(): array
     {
@@ -57,7 +57,7 @@ final class Analyzer
         $this->traverseFiles($files, $callVisitor, static fn() => null);
         ($this->log)("  Found " . count($callVisitor->getEdges()) . " raw call edges");
 
-        return (new GraphBuilder())->build($classMap, $callVisitor->getEdges(), $hierarchy);
+        return ['root' => $this->basePath] + (new GraphBuilder())->build($classMap, $callVisitor->getEdges(), $hierarchy);
     }
 
     /**

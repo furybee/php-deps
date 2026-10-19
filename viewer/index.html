@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Laravel Dependency Graph</title>
+  <title>PHP Deps</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -38,6 +38,22 @@
       </div>
     </div>
 
+    <div id="size-mode">
+      <label for="size-by">Node size</label>
+      <select id="size-by">
+        <option value="methods">Methods</option>
+        <option value="dependents">Dependents (Ca)</option>
+      </select>
+    </div>
+
+    <div id="cycles-section" hidden>
+      <div class="filter-header">
+        <label>Cycles</label>
+        <button id="cycle-clear" class="toggle-all-btn" hidden>Show all</button>
+      </div>
+      <div id="cycle-list"></div>
+    </div>
+
     <div id="filters">
       <div class="filter-header">
         <label>Layers</label>
@@ -61,6 +77,14 @@
       </div>
       <div id="edge-type-filters"></div>
     </div>
+
+    <details id="settings">
+      <summary>Editor links</summary>
+      <label for="editor-url">URL template, <code>{file}</code> and <code>{line}</code> are replaced</label>
+      <input type="text" id="editor-url" autocomplete="off" spellcheck="false">
+      <label for="project-path">Project path on this machine</label>
+      <input type="text" id="project-path" autocomplete="off" spellcheck="false">
+    </details>
   </div>
 
   <button id="sidebar-toggle">&#9776;</button>
@@ -91,10 +115,9 @@
     <button id="btn-reset-zoom" title="Reset zoom">Reset Zoom</button>
   </div>
 
-  <!-- Libraries via CDN (UMD builds) -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/graphology/0.25.4/graphology.umd.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/graphology-layout-forceatlas2@0.10.1/build/graphology-layout-forceatlas2.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/sigma.js/2.4.0/sigma.min.js"></script>
+  <script src="vendor/graphology.umd.min.js"></script>
+  <script src="vendor/graphology-layout-forceatlas2.min.js"></script>
+  <script src="vendor/sigma.min.js"></script>
 
   <script src="app.js"></script>
 </body>

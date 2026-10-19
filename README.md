@@ -24,7 +24,7 @@
 - **Layer detection** — auto-categorizes classes (Controller, Service, Model, Job, Action, etc.)
 - **Force-directed layout** — ForceAtlas2 algorithm for natural clustering
 - **Search & filter** — find classes instantly, filter by layer or edge type
-- **No build step viewer** — static HTML, libraries loaded from a CDN, works from `file://` with a file picker
+- **No build step viewer** — static HTML with vendored libraries, works offline and from `file://` with a file picker
 - **Architecture rules** — forbid dependencies between layers or cycles, fail CI on new violations, baseline for existing ones
 - **Cycles & coupling metrics** — class and namespace cycles, afferent/efferent coupling, instability, abstractness
 - **Laravel optimized** — understands Laravel patterns (service injection, `app()` helper, Form Requests)
@@ -66,7 +66,8 @@ open viewer/index.html
 
 Load `output/graph.json` via the file picker (drag & drop supported).
 
-> If served via HTTP (`python3 -m http.server 8765 -d viewer`), it auto-loads `graph.json` from the same directory.
+> If served via HTTP (`python3 -m http.server 8765 -d viewer`), it auto-loads `graph.json` from the same directory
+> (`php analyze.php --output=viewer/graph.json`, ignored by git).
 
 ## CLI Options
 
@@ -257,7 +258,10 @@ Classes are categorized by namespace, in this order: a known layer segment, deep
 | **Click** | Select a node to see all its connections in the info panel |
 | **Hover** | Highlight direct neighbors, fade everything else |
 | **Force Layout** | Toggle ForceAtlas2 to reorganize the graph |
-| **Info panel** | Shows dependencies, dependents, layer breakdown |
+| **Info panel** | Shows dependencies, dependents, layer breakdown, Ca / Ce / instability, cycle membership |
+| **Cycles** | Lists the largest class cycles, click one to isolate it |
+| **Node size** | By number of methods or by number of dependents (Ca) |
+| **Editor links** | Opens the class in PhpStorm (configurable URL template, e.g. `vscode://file/{file}:{line}`). When the analysis ran in a container, set the project path on your machine once |
 
 ## Architecture
 
