@@ -6,24 +6,22 @@ namespace DepsGraph\Architecture;
 
 /**
  * Assigns classes to the configured layers. The first matching layer wins.
- * Patterns are FQCN globs: `*` matches within one namespace segment, `**` across segments.
  */
 final class LayerMap
 {
-    /** @var array<string, string> layer => regex */
-    private array $regexes = [];
+    /** @var array<string, ClassPattern> */
+    private array $patterns = [];
 
     /** @var array<string, string|null> */
     private array $cache = [];
 
     /**
-     * @param array<string, string[]> $layers
+     * @param array<string, string[]> $layers layer => FQCN globs
      */
     public function __construct(array $layers)
     {
         foreach ($layers as $layer => $patterns) {
-            $alternatives = array_map(self::globToRegex(...), $patterns);
-            $this->regexes[$layer] = '/^(?:' . implode('|', $alternatives) . ')$/';
+            $this->patterns[$layer] = new ClassPattern($patterns);
         }
     }
 
@@ -33,26 +31,12 @@ final class LayerMap
             return $this->cache[$class];
         }
 
-        foreach ($this->regexes as $layer => $regex) {
-            if (preg_match($regex, $class) === 1) {
+        foreach ($this->patterns as $layer => $pattern) {
+            if ($pattern->matches($class)) {
                 return $this->cache[$class] = $layer;
             }
         }
 
         return $this->cache[$class] = null;
-    }
-
-    private static function globToRegex(string $pattern): string
-    {
-        $parts = preg_split('/(\*\*|\*)/', ltrim($pattern, '\\'), -1, PREG_SPLIT_DELIM_CAPTURE) ?: [];
-
-        return implode('', array_map(
-            static fn(string $part) => match ($part) {
-                '**' => '.*',
-                '*' => '[^\\\\]*',
-                default => preg_quote($part, '/'),
-            },
-            $parts,
-        ));
     }
 }

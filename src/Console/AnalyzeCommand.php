@@ -8,12 +8,15 @@ use DepsGraph\Analyzer;
 use DepsGraph\Architecture\ArchitectureConfig;
 use DepsGraph\Architecture\Baseline;
 use DepsGraph\Architecture\CheckResult;
+use DepsGraph\Architecture\CycleRuleChecker;
 use DepsGraph\Architecture\DependencyRuleChecker;
 use DepsGraph\Architecture\InvalidConfigException;
 use DepsGraph\Architecture\Reporter\GithubReporter;
 use DepsGraph\Architecture\Reporter\GitlabReporter;
 use DepsGraph\Architecture\Reporter\Reporter;
 use DepsGraph\Architecture\Reporter\TextReporter;
+use DepsGraph\Metrics\GraphMetrics;
+use DepsGraph\Metrics\MetricsReport;
 
 final class AnalyzeCommand
 {
@@ -24,8 +27,8 @@ final class AnalyzeCommand
     private const DEFAULT_CONFIG = 'php-deps.php';
     private const DEFAULT_BASELINE = 'php-deps-baseline.json';
     private const DEFAULT_EXCLUDE = ['vendor', 'node_modules', '.git', '.claude', 'storage', 'bootstrap/cache'];
-    private const VALUE_OPTIONS = ['root', 'dir', 'exclude', 'output', 'config', 'format'];
-    private const FLAG_OPTIONS = ['pretty', 'quiet', 'help', 'check', 'generate-baseline'];
+    private const VALUE_OPTIONS = ['root', 'dir', 'exclude', 'output', 'config', 'format', 'namespace-depth'];
+    private const FLAG_OPTIONS = ['pretty', 'quiet', 'help', 'check', 'generate-baseline', 'metrics'];
 
     private const USAGE = <<<TXT
 Usage: php-deps [options]
@@ -39,6 +42,11 @@ Graph:
   --output=FILE         JSON graph output, relative to the current directory
                         (default: <php-deps>/output/graph.json, not written with --check unless given)
   --pretty              Pretty-print the JSON
+
+Metrics:
+  --metrics             Print cycles and coupling metrics (always included in the JSON graph)
+  --namespace-depth=N   Group namespaces on their first N segments for namespace metrics and cycles
+                        (default: 0, full namespace)
 
 Architecture rules:
   --config=FILE         Rules file (default: <root>/php-deps.php when present)
@@ -113,7 +121,17 @@ TXT;
             return self::INVALID_USAGE;
         }
 
-        $graph = $this->analyze($options, $config, $root);
+        $namespaceDepth = $options['namespace-depth'][0] ?? '0';
+        if (!ctype_digit($namespaceDepth)) {
+            fwrite($this->stderr, "Error: --namespace-depth expects a number\n");
+            return self::INVALID_USAGE;
+        }
+
+        $graph = (new GraphMetrics())->enrich($this->analyze($options, $config, $root), (int) $namespaceDepth);
+
+        if (isset($options['metrics'])) {
+            fwrite($this->stdout, (new MetricsReport())->render($graph));
+        }
 
         if (!$isChecking || isset($options['output'])) {
             $this->writeGraph($graph, self::absolute($options['output'][0] ?? $this->defaultOutput, $cwd), isset($options['pretty']));
@@ -123,16 +141,19 @@ TXT;
             return self::SUCCESS;
         }
 
-        $violations = (new DependencyRuleChecker($config))->check($graph);
+        $issues = (new DependencyRuleChecker($config))->check($graph);
+        if ($config->cycles !== null) {
+            array_push($issues, ...(new CycleRuleChecker($config->cycles))->check($graph));
+        }
         $baselineFile = $config->baseline ?? $root . '/' . self::DEFAULT_BASELINE;
 
         if (isset($options['generate-baseline'])) {
-            Baseline::write($baselineFile, $violations);
-            fwrite($this->stderr, count($violations) . " violation(s) written to {$baselineFile}\n");
+            Baseline::write($baselineFile, $issues);
+            fwrite($this->stderr, count($issues) . " violation(s) written to {$baselineFile}\n");
             return self::SUCCESS;
         }
 
-        $result = CheckResult::from($violations, Baseline::load($baselineFile));
+        $result = CheckResult::from($issues, Baseline::load($baselineFile));
         fwrite($this->stdout, $reporter->report($result));
 
         return $result->isSuccessful() ? self::SUCCESS : self::VIOLATIONS;

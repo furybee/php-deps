@@ -18,6 +18,7 @@ final class ArchitectureConfig
         public readonly array $paths = [],
         public readonly ?array $exclude = null,
         public readonly ?string $baseline = null,
+        public readonly ?CycleRule $cycles = null,
     ) {
         foreach ($rules as $layer => $allowed) {
             foreach ([$layer, ...$allowed] as $name) {
@@ -50,12 +51,23 @@ final class ArchitectureConfig
             paths: array_values((array) ($config['paths'] ?? [])),
             exclude: isset($config['exclude']) ? array_values((array) $config['exclude']) : null,
             baseline: is_string($baseline) ? $baseline : null,
+            cycles: self::cycleRule($config['cycles'] ?? null),
         );
     }
 
     public function hasRules(): bool
     {
-        return $this->rules !== [];
+        return $this->rules !== [] || $this->cycles !== null;
+    }
+
+    private static function cycleRule(mixed $value): ?CycleRule
+    {
+        return match (true) {
+            $value === null, $value === false => null,
+            $value === true => new CycleRule(),
+            is_array($value) => CycleRule::fromArray($value),
+            default => throw new InvalidConfigException('"cycles" must be a boolean or an array'),
+        };
     }
 
     /**

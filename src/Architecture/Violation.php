@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace DepsGraph\Architecture;
 
-final class Violation
+final class Violation implements Issue
 {
     public function __construct(
         public readonly string $sourceClass,
@@ -17,12 +17,29 @@ final class Violation
     ) {
     }
 
-    /**
-     * Stable across unrelated edits: no line number.
-     */
     public function key(): string
     {
         return $this->sourceClass . ' -> ' . $this->targetClass;
+    }
+
+    public function title(): string
+    {
+        return "{$this->sourceLayer} -> {$this->targetLayer}";
+    }
+
+    public function summary(): string
+    {
+        return "{$this->sourceClass} -> {$this->targetClass} ({$this->edgeType})";
+    }
+
+    public function file(): string
+    {
+        return $this->file;
+    }
+
+    public function line(): int
+    {
+        return $this->line;
     }
 
     public function message(): string

@@ -84,6 +84,49 @@ final class AnalyzeCommandTest extends TestCase
         $this->assertStringStartsWith('::error file=src/Billing/Domain/Invoice.php,line=14,title=Architecture%3A Domain -> Infrastructure::', $this->stdout());
     }
 
+    public function testReportsNamespaceCyclesWhereTheyClose(): void
+    {
+        $this->useConfig(['cycles' => ['level' => 'namespace']]);
+
+        $exitCode = $this->execute('--check', '--quiet');
+
+        $this->assertSame(AnalyzeCommand::VIOLATIONS, $exitCode);
+        $this->assertStringContainsString('Namespace cycles (1)', $this->stdout());
+        $this->assertStringContainsString('Shop\Billing\Domain -> Shop\Billing\Infrastructure -> Shop\Billing\Domain', $this->stdout());
+        $this->assertStringContainsString('src/Billing/Infrastructure/PdfRenderer.php:9', $this->stdout());
+    }
+
+    public function testLeavesIgnoredClassesOutOfCycles(): void
+    {
+        $this->useConfig(['cycles' => ['level' => 'class', 'ignore' => ['**\Infrastructure\**']]]);
+
+        $this->assertSame(AnalyzeCommand::SUCCESS, $this->execute('--check', '--quiet'));
+    }
+
+    public function testBaselinesCyclesLikeOtherViolations(): void
+    {
+        $this->useConfig(['cycles' => ['level' => 'class']]);
+        $this->execute('--generate-baseline', '--quiet');
+
+        $this->assertSame(AnalyzeCommand::SUCCESS, $this->execute('--check', '--quiet'));
+        $this->assertSame(
+            ['class cycle: Shop\Billing\Domain\Invoice, Shop\Billing\Infrastructure\PdfRenderer'],
+            json_decode((string) file_get_contents($this->workDir . '/baseline.json'), true),
+        );
+    }
+
+    public function testPrintsMetrics(): void
+    {
+        $this->execute('--metrics', '--quiet', '--output=graph.json');
+
+        $this->assertStringContainsString('Class cycles: 1', $this->stdout());
+        $this->assertStringContainsString('Most depended upon classes', $this->stdout());
+        $graph = json_decode((string) file_get_contents($this->workDir . '/graph.json'), true);
+        $cycles = array_column(array_filter($graph['nodes'], fn(array $node) => $node['type'] === 'class'), 'cycle', 'id');
+        $this->assertSame(0, $cycles['Shop\Billing\Domain\Invoice']);
+        $this->assertNull($cycles['Shop\Legacy\Helpers']);
+    }
+
     public function testRejectsUnknownOptions(): void
     {
         $this->assertSame(AnalyzeCommand::INVALID_USAGE, $this->execute('--chek'));
@@ -110,6 +153,15 @@ final class AnalyzeCommandTest extends TestCase
         $command = new AnalyzeCommand($this->workDir . '/default-graph.json', $this->stdout, $this->stderr);
 
         return $command->run($arguments, $this->workDir);
+    }
+
+    /**
+     * @param array<string, mixed> $config
+     */
+    private function useConfig(array $config): void
+    {
+        $config += ['paths' => ['src'], 'baseline' => 'baseline.json'];
+        file_put_contents($this->workDir . '/php-deps.php', '<?php return ' . var_export($config, true) . ';');
     }
 
     private function stdout(): string
