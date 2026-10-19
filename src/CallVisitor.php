@@ -20,7 +20,7 @@ final class CallVisitor extends NodeVisitorAbstract
     private const CONTAINER_METHODS = ['make', 'makewith'];
     private const CONTAINER_CLASSES = ['Illuminate\Support\Facades\App', 'App', 'Illuminate\Container\Container'];
 
-    /** @var array<array{source: string, target: string, type: string}> */
+    /** @var array<array{source: string, target: string, type: string, line: int}> */
     private array $edges = [];
 
     /** @var ClassScope[] */
@@ -36,7 +36,7 @@ final class CallVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * @return array<array{source: string, target: string, type: string}>
+     * @return array<array{source: string, target: string, type: string, line: int}>
      */
     public function getEdges(): array
     {
@@ -161,28 +161,51 @@ final class CallVisitor extends NodeVisitorAbstract
     {
         $frame = end($this->frames);
         $from = $frame['scope']->class . '::' . $frame['method'];
+        $line = $node->getStartLine();
 
         if ($node instanceof Expr\New_ && $node->class instanceof Node\Name) {
-            $this->addEdge($from, $this->typeResolver->resolveName($node->class, $this->currentScope()), 'instantiates');
+            $this->addEdge($from, $this->typeResolver->resolveName($node->class, $this->currentScope()), 'instantiates', $line);
             return;
         }
 
         $resolved = $this->containerResolution($node);
         if ($resolved !== null) {
-            $this->addEdge($from, $resolved, 'resolves');
+            $this->addEdge($from, $resolved, 'resolves', $line);
             return;
         }
 
         if ($node instanceof Expr\StaticCall && $node->class instanceof Node\Name && $node->name instanceof Node\Identifier) {
             $class = $this->typeResolver->resolveName($node->class, $this->currentScope());
-            $this->addEdge($from, $class === null ? null : $class . '::' . $node->name->toString(), 'calls');
+            $this->addEdge($from, $class === null ? null : $class . '::' . $node->name->toString(), 'calls', $line);
             return;
         }
 
         if (($node instanceof Expr\MethodCall || $node instanceof Expr\NullsafeMethodCall) && $node->name instanceof Node\Identifier) {
             $class = $this->inferType($node->var);
-            $this->addEdge($from, $class === null ? null : $class . '::' . $node->name->toString(), 'calls');
+            $this->addEdge($from, $class === null ? null : $class . '::' . $node->name->toString(), 'calls', $line);
+            return;
         }
+
+        foreach ($this->referencedNames($node) as $name) {
+            $this->addEdge($from, $this->typeResolver->resolveName($name, $this->currentScope()), 'references', $line);
+        }
+    }
+
+    /**
+     * Class names used without being called: Foo::BAR, Foo::class, Foo::$bar, instanceof, catch, attributes.
+     *
+     * @return Node\Name[]
+     */
+    private function referencedNames(Node $node): array
+    {
+        return match (true) {
+            $node instanceof Expr\ClassConstFetch,
+            $node instanceof Expr\StaticPropertyFetch,
+            $node instanceof Expr\Instanceof_ => $node->class instanceof Node\Name ? [$node->class] : [],
+            $node instanceof Node\Stmt\Catch_ => $node->types,
+            $node instanceof Node\Attribute => [$node->name],
+            default => [],
+        };
     }
 
     private function inferType(Expr $expr): ?string
@@ -292,12 +315,12 @@ final class CallVisitor extends NodeVisitorAbstract
         return $this->typeResolver->resolveName($firstArg->class, $this->currentScope());
     }
 
-    private function addEdge(string $from, ?string $to, string $type): void
+    private function addEdge(string $from, ?string $to, string $type, int $line): void
     {
         if ($to === null) {
             return;
         }
 
-        $this->edges[] = ['source' => $from, 'target' => $to, 'type' => $type];
+        $this->edges[] = ['source' => $from, 'target' => $to, 'type' => $type, 'line' => $line];
     }
 }

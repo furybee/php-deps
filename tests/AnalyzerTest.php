@@ -81,6 +81,40 @@ final class AnalyzerTest extends TestCase
         $this->assertEdge(self::SERVICE . '::afterAnonymousClass', 'Acme\Models\User', 'instantiates');
     }
 
+    public function testRecordsClassReferencesThatAreNotCalls(): void
+    {
+        $this->assertEdge('Acme\Services\Notifier::notify', 'Acme\Services\MailerException', 'references');
+        $this->assertEdge('Acme\Services\Notifier::notify', 'Acme\Models\Status', 'references');
+    }
+
+    public function testRecordsTypesUsedOnlyInSignatures(): void
+    {
+        $this->assertEdge('Acme\Contracts\Repository::report', 'Acme\Models\Report', 'uses_type');
+    }
+
+    public function testSkipsWeakEdgesBetweenClassesAlreadyLinked(): void
+    {
+        $this->assertEdge(self::SERVICE . '::handle', 'Acme\Services\Mailer', 'resolves');
+        $this->assertNotContains(
+            [self::SERVICE . '::handle', 'Acme\Services\Mailer', 'references'],
+            array_map(fn(array $edge) => [$edge['source'], $edge['target'], $edge['type']], self::$graph['edges']),
+        );
+        $this->assertNotContains(
+            ['Acme\Services\Notifier::notify', 'Acme\Services\Mailer', 'uses_type'],
+            array_map(fn(array $edge) => [$edge['source'], $edge['target'], $edge['type']], self::$graph['edges']),
+        );
+    }
+
+    public function testRecordsTheLineOfEachEdge(): void
+    {
+        $lines = [];
+        foreach (self::$graph['edges'] as $edge) {
+            $lines[$edge['source'] . '>' . $edge['target']] = $edge['line'];
+        }
+
+        $this->assertSame(20, $lines[self::SERVICE . '::handle>Acme\Contracts\Repository::find']);
+    }
+
     public function testNeverEmitsEdgesTowardsUnknownNodes(): void
     {
         $ids = array_flip(array_column(self::$graph['nodes'], 'id'));
@@ -102,7 +136,7 @@ final class AnalyzerTest extends TestCase
     {
         $this->assertContains(
             ['source' => $source, 'target' => $target, 'type' => $type],
-            self::$graph['edges'],
+            array_map(fn(array $edge) => array_diff_key($edge, ['line' => true]), self::$graph['edges']),
             "Missing {$type} edge {$source} -> {$target}",
         );
     }

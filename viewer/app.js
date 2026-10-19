@@ -48,6 +48,8 @@
     extends: "#7C3AED22",
     implements: "#06528822",
     uses_trait: "#71717A22",
+    uses_type: "#0F766E44",
+    references: "#52525B44",
   };
 
   // State
