@@ -4,196 +4,163 @@ declare(strict_types=1);
 
 namespace DepsGraph;
 
+/**
+ * Builds the graph JSON structure. Only classes found in the scanned
+ * directories become nodes: edges towards anything else are dropped.
+ */
 final class GraphBuilder
 {
+    private const CLASS_LEVEL_EDGES = [
+        'extends' => 'extends',
+        'implements' => 'implements',
+        'traits' => 'uses_trait',
+    ];
+
+    /** @var array<string, true> */
+    private array $edgeKeys = [];
+
+    /** @var array<array{source: string, target: string, type: string}> */
+    private array $graphEdges = [];
+
     /**
-     * Build the final graph JSON structure from class data and edges.
-     *
-     * @param array<string, array> $classes Class data keyed by FQCN
-     * @param array<array{source: string, target: string, type: string}> $edges
-     * @return array{nodes: array, edges: array, stats: array}
+     * @param array<string, array<string, mixed>> $classes keyed by FQCN
+     * @param array<array{source: string, target: string, type: string}> $rawEdges
+     * @return array{nodes: array<mixed>, edges: array<mixed>, stats: array<string, mixed>}
      */
-    public function build(array $classes, array $edges): array
+    public function build(array $classes, array $rawEdges, ClassHierarchy $hierarchy): array
     {
+        $this->edgeKeys = [];
+        $this->graphEdges = [];
         $nodes = [];
-        $graphEdges = [];
-        $referencedClasses = [];
-        $edgeKeys = [];
 
-        // Collect all referenced class FQCNs from edges
-        foreach ($edges as $edge) {
-            $sourceClass = str_contains($edge['source'], '::') ? explode('::', $edge['source'])[0] : $edge['source'];
-            $targetClass = str_contains($edge['target'], '::') ? explode('::', $edge['target'])[0] : $edge['target'];
-            $referencedClasses[$sourceClass] = true;
-            $referencedClasses[$targetClass] = true;
-        }
-
-        // Build class nodes
         foreach ($classes as $fqcn => $data) {
-            $nodes[] = [
-                'id' => $fqcn,
-                'type' => 'class',
-                'label' => $data['name'],
-                'namespace' => $data['namespace'],
-                'layer' => $data['layer'],
-                'classType' => $data['type'], // class/interface/trait/enum
-                'methods' => array_keys($data['methods']),
-                'methodCount' => count($data['methods']),
-            ];
-
-            // Build method nodes
+            $nodes[] = $this->classNode($fqcn, $data);
             foreach ($data['methods'] as $methodName => $methodData) {
-                $methodId = $fqcn . '::' . $methodName;
-                $nodes[] = [
-                    'id' => $methodId,
-                    'type' => 'method',
-                    'label' => $methodName,
-                    'class' => $fqcn,
-                    'visibility' => $methodData['visibility'],
-                    'static' => $methodData['static'],
-                    'layer' => $data['layer'],
-                ];
+                $nodes[] = $this->methodNode($fqcn, (string) $methodName, $methodData, $data['layer']);
             }
 
-            // Add class-level dependency edges (extends, implements, traits)
-            if (!empty($data['extends']) && $this->isAppClass($data['extends'])) {
-                $key = $fqcn . '|extends|' . $data['extends'];
-                if (!isset($edgeKeys[$key])) {
-                    $graphEdges[] = ['source' => $fqcn, 'target' => $data['extends'], 'type' => 'extends'];
-                    $edgeKeys[$key] = true;
-                    $referencedClasses[$data['extends']] = true;
-                }
-            }
-
-            foreach ($data['implements'] as $impl) {
-                if ($this->isAppClass($impl)) {
-                    $key = $fqcn . '|implements|' . $impl;
-                    if (!isset($edgeKeys[$key])) {
-                        $graphEdges[] = ['source' => $fqcn, 'target' => $impl, 'type' => 'implements'];
-                        $edgeKeys[$key] = true;
-                        $referencedClasses[$impl] = true;
+            foreach (self::CLASS_LEVEL_EDGES as $field => $type) {
+                foreach ($data[$field] as $target) {
+                    if ($hierarchy->has($target)) {
+                        $this->addEdge($fqcn, $target, $type);
                     }
                 }
             }
 
-            foreach ($data['traits'] as $trait) {
-                if ($this->isAppClass($trait)) {
-                    $key = $fqcn . '|uses_trait|' . $trait;
-                    if (!isset($edgeKeys[$key])) {
-                        $graphEdges[] = ['source' => $fqcn, 'target' => $trait, 'type' => 'uses_trait'];
-                        $edgeKeys[$key] = true;
-                        $referencedClasses[$trait] = true;
-                    }
-                }
-            }
-
-            // Constructor injection as depends_on edges
-            foreach ($data['constructorParams'] as $paramName => $paramType) {
-                if ($paramType && $this->isAppClass($paramType)) {
-                    $key = $fqcn . '|depends_on|' . $paramType;
-                    if (!isset($edgeKeys[$key])) {
-                        $graphEdges[] = ['source' => $fqcn, 'target' => $paramType, 'type' => 'depends_on'];
-                        $edgeKeys[$key] = true;
-                    }
+            foreach ($data['constructorParams'] as $paramType) {
+                if ($paramType !== null && $paramType !== $fqcn && $hierarchy->has($paramType)) {
+                    $this->addEdge($fqcn, $paramType, 'depends_on');
                 }
             }
         }
 
-        // Add call edges (deduplicated)
-        foreach ($edges as $edge) {
-            $key = $edge['source'] . '|' . $edge['type'] . '|' . $edge['target'];
-            if (!isset($edgeKeys[$key])) {
-                $graphEdges[] = $edge;
-                $edgeKeys[$key] = true;
+        $collapsedCalls = 0;
+        foreach ($rawEdges as $edge) {
+            [$targetClass, $targetMethod] = array_pad(explode('::', $edge['target'], 2), 2, null);
+            if (!$hierarchy->has($targetClass)) {
+                continue;
             }
-        }
 
-        // Create placeholder nodes for referenced but not-parsed classes
-        $existingNodes = array_flip(array_column($nodes, 'id'));
-        foreach ($referencedClasses as $fqcn => $_) {
-            if (!isset($existingNodes[$fqcn]) && !isset($classes[$fqcn])) {
-                $parts = explode('\\', $fqcn);
-                $className = end($parts);
-                $nodes[] = [
-                    'id' => $fqcn,
-                    'type' => 'class',
-                    'label' => $className,
-                    'namespace' => implode('\\', array_slice($parts, 0, -1)),
-                    'layer' => TypeResolver::detectLayer($fqcn),
-                    'classType' => self::guessClassType($className),
-                    'methods' => [],
-                    'methodCount' => 0,
-                    'external' => true,
-                ];
+            if ($targetMethod === null) {
+                $this->addEdge($edge['source'], $targetClass, $edge['type']);
+                continue;
             }
-        }
 
-        // Compute stats
-        $layerCounts = [];
-        foreach ($nodes as $node) {
-            if ($node['type'] === 'class') {
-                $layer = $node['layer'];
-                $layerCounts[$layer] = ($layerCounts[$layer] ?? 0) + 1;
+            $declaring = $hierarchy->findMethod($targetClass, $targetMethod);
+            if ($declaring === null) {
+                $collapsedCalls++;
             }
+            $target = $declaring === null ? $targetClass : $declaring[0] . '::' . $declaring[1];
+            $this->addEdge($edge['source'], $target, $edge['type']);
         }
-        arsort($layerCounts);
-
-        $edgeTypeCounts = [];
-        foreach ($graphEdges as $edge) {
-            $type = $edge['type'];
-            $edgeTypeCounts[$type] = ($edgeTypeCounts[$type] ?? 0) + 1;
-        }
-
-        $classTypeCounts = [];
-        foreach ($nodes as $node) {
-            if ($node['type'] === 'class') {
-                $ct = $node['classType'];
-                $classTypeCounts[$ct] = ($classTypeCounts[$ct] ?? 0) + 1;
-            }
-        }
-        arsort($classTypeCounts);
 
         return [
             'nodes' => $nodes,
-            'edges' => $graphEdges,
-            'stats' => [
-                'totalClasses' => count($classes),
-                'totalMethods' => array_sum(array_map(fn($c) => count($c['methods']), $classes)),
-                'totalEdges' => count($graphEdges),
-                'layerCounts' => $layerCounts,
-                'edgeTypeCounts' => $edgeTypeCounts,
-                'classTypeCounts' => $classTypeCounts,
-            ],
+            'edges' => $this->graphEdges,
+            'stats' => $this->stats($classes, $nodes, $collapsedCalls),
         ];
     }
 
     /**
-     * Guess the PHP type of an unparsed class from its name.
+     * @param array<string, mixed> $data
+     * @return array<string, mixed>
      */
-    private static function guessClassType(string $className): string
+    private function classNode(string $fqcn, array $data): array
     {
-        // Starts with I + uppercase = likely interface (IUserService, IRepository)
-        if (preg_match('/^I[A-Z]/', $className)) {
-            return 'interface';
-        }
-
-        if (str_ends_with($className, 'Interface') || str_ends_with($className, 'Contract')) {
-            return 'interface';
-        }
-
-        if (str_ends_with($className, 'Trait')) {
-            return 'trait';
-        }
-
-        if (str_ends_with($className, 'Enum')) {
-            return 'enum';
-        }
-
-        return 'class';
+        return [
+            'id' => $fqcn,
+            'type' => 'class',
+            'label' => $data['name'],
+            'namespace' => $data['namespace'],
+            'layer' => $data['layer'],
+            'classType' => $data['type'],
+            'file' => $data['file'] ?? null,
+            'line' => $data['line'],
+            'methods' => array_keys($data['methods']),
+            'methodCount' => count($data['methods']),
+        ];
     }
 
-    private function isAppClass(string $fqcn): bool
+    /**
+     * @param array<string, mixed> $methodData
+     * @return array<string, mixed>
+     */
+    private function methodNode(string $fqcn, string $methodName, array $methodData, string $layer): array
     {
-        return str_starts_with($fqcn, 'App\\');
+        return [
+            'id' => $fqcn . '::' . $methodName,
+            'type' => 'method',
+            'label' => $methodName,
+            'class' => $fqcn,
+            'visibility' => $methodData['visibility'],
+            'static' => $methodData['static'],
+            'line' => $methodData['line'],
+            'layer' => $layer,
+        ];
+    }
+
+    private function addEdge(string $source, string $target, string $type): void
+    {
+        $key = $source . '|' . $type . '|' . $target;
+        if (isset($this->edgeKeys[$key])) {
+            return;
+        }
+
+        $this->edgeKeys[$key] = true;
+        $this->graphEdges[] = ['source' => $source, 'target' => $target, 'type' => $type];
+    }
+
+    /**
+     * @param array<string, array<string, mixed>> $classes
+     * @param array<array<string, mixed>> $nodes
+     * @return array<string, mixed>
+     */
+    private function stats(array $classes, array $nodes, int $collapsedCalls): array
+    {
+        $layerCounts = [];
+        $classTypeCounts = [];
+        foreach ($nodes as $node) {
+            if ($node['type'] === 'class') {
+                $layerCounts[$node['layer']] = ($layerCounts[$node['layer']] ?? 0) + 1;
+                $classTypeCounts[$node['classType']] = ($classTypeCounts[$node['classType']] ?? 0) + 1;
+            }
+        }
+        arsort($layerCounts);
+        arsort($classTypeCounts);
+
+        $edgeTypeCounts = [];
+        foreach ($this->graphEdges as $edge) {
+            $edgeTypeCounts[$edge['type']] = ($edgeTypeCounts[$edge['type']] ?? 0) + 1;
+        }
+
+        return [
+            'totalClasses' => count($classes),
+            'totalMethods' => array_sum(array_map(fn(array $c) => count($c['methods']), $classes)),
+            'totalEdges' => count($this->graphEdges),
+            'callsCollapsedToClass' => $collapsedCalls,
+            'layerCounts' => $layerCounts,
+            'edgeTypeCounts' => $edgeTypeCounts,
+            'classTypeCounts' => $classTypeCounts,
+        ];
     }
 }

@@ -5,276 +5,299 @@ declare(strict_types=1);
 namespace DepsGraph;
 
 use PhpParser\Node;
+use PhpParser\Node\Expr;
 use PhpParser\NodeVisitorAbstract;
 
 /**
- * Second pass: extracts method calls, instantiations, static calls, and app() calls.
+ * Second pass: extracts method calls, instantiations and container resolutions.
+ * Expects PhpParser's NameResolver to run before it in the same traverser.
+ *
+ * Edges are raw: targets may be external or inherited members, GraphBuilder sorts them out.
  */
 final class CallVisitor extends NodeVisitorAbstract
 {
-    /** @var array<array{from: string, to: string, type: string}> */
+    private const CONTAINER_FUNCTIONS = ['app', 'resolve'];
+    private const CONTAINER_METHODS = ['make', 'makewith'];
+    private const CONTAINER_CLASSES = ['Illuminate\Support\Facades\App', 'App', 'Illuminate\Container\Container'];
+
+    /** @var array<array{source: string, target: string, type: string}> */
     private array $edges = [];
 
-    private TypeResolver $typeResolver;
+    /** @var ClassScope[] */
+    private array $scopes = [];
 
-    /** @var array<string, array> class data from ClassVisitor */
-    private array $classMap;
+    /** @var array<array{scope: ClassScope, method: string, locals: array<string, string>}> */
+    private array $frames = [];
 
-    private ?string $currentClass = null;
-    private ?string $currentMethod = null;
-    private string $currentNamespace = '';
-
-    /** @var array<string, string> use map for current file */
-    private array $useMap = [];
-
-    /** @var array<string, string> local var types in current method: varName => FQCN */
-    private array $localVarTypes = [];
-
-    public function __construct(TypeResolver $typeResolver, array $classMap)
-    {
-        $this->typeResolver = $typeResolver;
-        $this->classMap = $classMap;
+    public function __construct(
+        private readonly TypeResolver $typeResolver,
+        private readonly ClassHierarchy $hierarchy,
+    ) {
     }
 
+    /**
+     * @return array<array{source: string, target: string, type: string}>
+     */
     public function getEdges(): array
     {
         return $this->edges;
     }
 
-    public function setContext(string $namespace, array $useMap): void
+    public function beforeTraverse(array $nodes): ?array
     {
-        $this->currentNamespace = $namespace;
-        $this->useMap = $useMap;
-        $this->typeResolver->setNamespace($namespace);
-        $this->typeResolver->setUseMap($useMap);
+        $this->scopes = [];
+        $this->frames = [];
+
+        return null;
     }
 
     public function enterNode(Node $node): ?int
     {
-        if ($node instanceof Node\Stmt\Namespace_) {
-            $this->currentNamespace = $node->name ? $node->name->toString() : '';
-            return null;
-        }
-
-        if ($node instanceof Node\Stmt\Class_ || $node instanceof Node\Stmt\Trait_ || $node instanceof Node\Stmt\Enum_) {
-            if ($node->name === null) return null;
-            $name = $node->name->toString();
-            $this->currentClass = $this->currentNamespace ? $this->currentNamespace . '\\' . $name : $name;
+        if ($node instanceof Node\Stmt\ClassLike) {
+            $this->scopes[] = $node->namespacedName === null
+                ? ClassScope::anonymous()
+                : new ClassScope($node->namespacedName->toString(), $this->hierarchy->parentOf($node->namespacedName->toString()));
             return null;
         }
 
         if ($node instanceof Node\Stmt\ClassMethod) {
-            $this->currentMethod = $node->name->toString();
-            $this->localVarTypes = [];
-
-            // Register method params as local var types
-            if ($this->currentClass && isset($this->classMap[$this->currentClass]['methods'][$this->currentMethod])) {
-                $params = $this->classMap[$this->currentClass]['methods'][$this->currentMethod]['params'] ?? [];
-                foreach ($params as $paramName => $paramType) {
-                    if ($paramType) {
-                        $this->localVarTypes[ltrim($paramName, '$')] = $paramType;
-                    }
-                }
-            }
+            $this->enterMethod($node);
             return null;
         }
 
-        if ($this->currentClass === null || $this->currentMethod === null) {
+        if ($this->frames === []) {
             return null;
         }
 
-        $from = $this->currentClass . '::' . $this->currentMethod;
+        $this->collectLocalTypes($node);
+        $this->collectEdges($node);
 
-        // new ClassName()
-        if ($node instanceof Node\Expr\New_) {
-            if ($node->class instanceof Node\Name) {
-                $className = $node->class->toString();
-                if ($className === 'self' || $className === 'static') {
-                    $resolved = $this->currentClass;
-                } else {
-                    $resolved = $this->typeResolver->resolve($className);
-                }
-                if ($resolved && $this->isAppClass($resolved)) {
-                    $this->addEdge($from, $resolved, 'instantiates');
-                }
-            }
-            return null;
+        return null;
+    }
+
+    public function leaveNode(Node $node): ?int
+    {
+        if ($node instanceof Node\Stmt\ClassLike) {
+            array_pop($this->scopes);
         }
 
-        // Static call: ClassName::method()
-        if ($node instanceof Node\Expr\StaticCall) {
-            if ($node->class instanceof Node\Name && $node->name instanceof Node\Identifier) {
-                $className = $node->class->toString();
-                if ($className === 'self' || $className === 'static' || $className === 'parent') {
-                    $resolved = $this->currentClass;
-                } else {
-                    $resolved = $this->typeResolver->resolve($className);
-                }
-                $method = $node->name->toString();
-                if ($resolved && $this->isAppClass($resolved)) {
-                    $this->addEdge($from, $resolved . '::' . $method, 'calls');
-                }
-            }
-            return null;
-        }
-
-        // app(ClassName::class) — Laravel container resolution
-        if ($node instanceof Node\Expr\FuncCall) {
-            if ($node->name instanceof Node\Name && $node->name->toString() === 'app') {
-                if (!empty($node->args) && $node->args[0] instanceof Node\Arg) {
-                    $arg = $node->args[0]->value;
-                    if ($arg instanceof Node\Expr\ClassConstFetch && $arg->name instanceof Node\Identifier && $arg->name->toString() === 'class') {
-                        if ($arg->class instanceof Node\Name) {
-                            $resolved = $this->typeResolver->resolve($arg->class->toString());
-                            if ($resolved && $this->isAppClass($resolved)) {
-                                $this->addEdge($from, $resolved, 'resolves');
-                            }
-                        }
-                    }
-                }
-            }
-            return null;
-        }
-
-        // $this->method() or $this->property->method()
-        if ($node instanceof Node\Expr\MethodCall && $node->name instanceof Node\Identifier) {
-            $method = $node->name->toString();
-            $targetClass = $this->resolveCallTarget($node->var);
-
-            if ($targetClass && $this->isAppClass($targetClass)) {
-                $this->addEdge($from, $targetClass . '::' . $method, 'calls');
-            }
-            return null;
-        }
-
-        // Track assignments: $var = new ClassName() or $var = app(ClassName::class)
-        if ($node instanceof Node\Expr\Assign) {
-            if ($node->var instanceof Node\Expr\Variable && is_string($node->var->name)) {
-                $varName = $node->var->name;
-
-                // $var = new ClassName()
-                if ($node->expr instanceof Node\Expr\New_ && $node->expr->class instanceof Node\Name) {
-                    $className = $node->expr->class->toString();
-                    $resolved = ($className === 'self' || $className === 'static')
-                        ? $this->currentClass
-                        : $this->typeResolver->resolve($className);
-                    if ($resolved) {
-                        $this->localVarTypes[$varName] = $resolved;
-                    }
-                }
-
-                // $var = app(ClassName::class)
-                if ($node->expr instanceof Node\Expr\FuncCall && $node->expr->name instanceof Node\Name && $node->expr->name->toString() === 'app') {
-                    if (!empty($node->expr->args) && $node->expr->args[0] instanceof Node\Arg) {
-                        $arg = $node->expr->args[0]->value;
-                        if ($arg instanceof Node\Expr\ClassConstFetch && $arg->name instanceof Node\Identifier && $arg->name->toString() === 'class' && $arg->class instanceof Node\Name) {
-                            $resolved = $this->typeResolver->resolve($arg->class->toString());
-                            if ($resolved) {
-                                $this->localVarTypes[$varName] = $resolved;
-                            }
-                        }
-                    }
-                }
-            }
+        if ($node instanceof Node\Stmt\ClassMethod && $this->isInNamedClass()) {
+            array_pop($this->frames);
         }
 
         return null;
     }
 
-    public function leaveNode(Node $node): void
+    private function isInNamedClass(): bool
     {
-        if ($node instanceof Node\Stmt\ClassMethod) {
-            $this->currentMethod = null;
-            $this->localVarTypes = [];
-        }
-        if ($node instanceof Node\Stmt\Class_ || $node instanceof Node\Stmt\Trait_ || $node instanceof Node\Stmt\Enum_) {
-            $this->currentClass = null;
-        }
+        $scope = end($this->scopes);
+
+        return $scope !== false && !$scope->isAnonymous();
     }
 
-    /**
-     * Resolve the class of a method call target expression.
-     */
-    private function resolveCallTarget(Node\Expr $expr): ?string
+    private function enterMethod(Node\Stmt\ClassMethod $node): void
     {
-        // $this->method()
-        if ($expr instanceof Node\Expr\Variable && $expr->name === 'this') {
-            return $this->currentClass;
+        if (!$this->isInNamedClass()) {
+            return;
         }
+        $scope = $this->currentScope();
 
-        // $variable->method()
-        if ($expr instanceof Node\Expr\Variable && is_string($expr->name)) {
-            // Check local vars first
-            if (isset($this->localVarTypes[$expr->name])) {
-                return $this->localVarTypes[$expr->name];
-            }
-            // Check method params
-            if ($this->currentClass && isset($this->classMap[$this->currentClass]['methods'][$this->currentMethod])) {
-                $params = $this->classMap[$this->currentClass]['methods'][$this->currentMethod]['params'] ?? [];
-                if (isset($params['$' . $expr->name])) {
-                    return $params['$' . $expr->name];
-                }
-            }
-            return null;
-        }
-
-        // $this->property->method() — property fetch on $this
-        if ($expr instanceof Node\Expr\PropertyFetch) {
-            if ($expr->var instanceof Node\Expr\Variable && $expr->var->name === 'this' && $expr->name instanceof Node\Identifier) {
-                $propName = $expr->name->toString();
-
-                // Check declared properties
-                if ($this->currentClass && isset($this->classMap[$this->currentClass]['properties'][$propName])) {
-                    return $this->classMap[$this->currentClass]['properties'][$propName];
-                }
-
-                // Check constructor injections
-                if ($this->currentClass) {
-                    $injections = $this->typeResolver->getConstructorInjections($this->currentClass);
-                    if (isset($injections[$propName])) {
-                        return $injections[$propName];
-                    }
-                }
-            }
-
-            // Chained: $expr->prop where $expr is resolvable
-            $parentClass = $this->resolveCallTarget($expr->var);
-            if ($parentClass && $expr->name instanceof Node\Identifier) {
-                $propName = $expr->name->toString();
-                if (isset($this->classMap[$parentClass]['properties'][$propName])) {
-                    return $this->classMap[$parentClass]['properties'][$propName];
-                }
-            }
-
-            return null;
-        }
-
-        // MethodCall chain: $a->b()->c() — try to resolve via return type
-        if ($expr instanceof Node\Expr\MethodCall) {
-            $parentClass = $this->resolveCallTarget($expr->var);
-            if ($parentClass && $expr->name instanceof Node\Identifier) {
-                $method = $expr->name->toString();
-                if (isset($this->classMap[$parentClass]['methods'][$method]['returnType'])) {
-                    return $this->classMap[$parentClass]['methods'][$method]['returnType'];
-                }
-            }
-            return null;
-        }
-
-        return null;
-    }
-
-    private function addEdge(string $from, string $to, string $type): void
-    {
-        $this->edges[] = [
-            'source' => $from,
-            'target' => $to,
-            'type' => $type,
+        $method = $node->name->toString();
+        $this->frames[] = [
+            'scope' => $scope,
+            'method' => $method,
+            'locals' => array_filter($this->hierarchy->methodParams((string) $scope->class, $method)),
         ];
     }
 
-    private function isAppClass(string $fqcn): bool
+    /**
+     * Calls made inside an anonymous class are attributed to the enclosing named method,
+     * but `$this` there is unknown.
+     */
+    private function currentScope(): ClassScope
     {
-        return str_starts_with($fqcn, 'App\\');
+        return end($this->scopes) ?: ClassScope::anonymous();
+    }
+
+    private function collectLocalTypes(Node $node): void
+    {
+        $frameIndex = array_key_last($this->frames);
+
+        if ($node instanceof Node\Stmt && $node->getDocComment() !== null) {
+            foreach ($this->typeResolver->resolveDocVariables($node->getDocComment(), $this->currentScope()) as $name => $type) {
+                $this->frames[$frameIndex]['locals'][$name] = $type;
+            }
+        }
+
+        if ($node instanceof Expr\Assign && $node->var instanceof Expr\Variable && is_string($node->var->name)) {
+            $type = $this->inferType($node->expr);
+            if ($type === null) {
+                unset($this->frames[$frameIndex]['locals'][$node->var->name]);
+            } else {
+                $this->frames[$frameIndex]['locals'][$node->var->name] = $type;
+            }
+            return;
+        }
+
+        if ($node instanceof Expr\Instanceof_ && $node->expr instanceof Expr\Variable && is_string($node->expr->name) && $node->class instanceof Node\Name) {
+            $type = $this->typeResolver->resolveName($node->class, $this->currentScope());
+            if ($type !== null) {
+                $this->frames[$frameIndex]['locals'][$node->expr->name] = $type;
+            }
+            return;
+        }
+
+        if ($node instanceof Expr\Closure || $node instanceof Expr\ArrowFunction) {
+            foreach ($node->params as $param) {
+                $type = $this->typeResolver->resolveTypeNode($param->type, $this->currentScope());
+                if ($type !== null && $param->var instanceof Expr\Variable && is_string($param->var->name)) {
+                    $this->frames[$frameIndex]['locals'][$param->var->name] = $type;
+                }
+            }
+        }
+    }
+
+    private function collectEdges(Node $node): void
+    {
+        $frame = end($this->frames);
+        $from = $frame['scope']->class . '::' . $frame['method'];
+
+        if ($node instanceof Expr\New_ && $node->class instanceof Node\Name) {
+            $this->addEdge($from, $this->typeResolver->resolveName($node->class, $this->currentScope()), 'instantiates');
+            return;
+        }
+
+        $resolved = $this->containerResolution($node);
+        if ($resolved !== null) {
+            $this->addEdge($from, $resolved, 'resolves');
+            return;
+        }
+
+        if ($node instanceof Expr\StaticCall && $node->class instanceof Node\Name && $node->name instanceof Node\Identifier) {
+            $class = $this->typeResolver->resolveName($node->class, $this->currentScope());
+            $this->addEdge($from, $class === null ? null : $class . '::' . $node->name->toString(), 'calls');
+            return;
+        }
+
+        if (($node instanceof Expr\MethodCall || $node instanceof Expr\NullsafeMethodCall) && $node->name instanceof Node\Identifier) {
+            $class = $this->inferType($node->var);
+            $this->addEdge($from, $class === null ? null : $class . '::' . $node->name->toString(), 'calls');
+        }
+    }
+
+    private function inferType(Expr $expr): ?string
+    {
+        return match (true) {
+            $expr instanceof Expr\Variable => $this->inferVariableType($expr),
+            $expr instanceof Expr\New_ => $expr->class instanceof Node\Name
+                ? $this->typeResolver->resolveName($expr->class, $this->currentScope())
+                : null,
+            $expr instanceof Expr\PropertyFetch, $expr instanceof Expr\NullsafePropertyFetch => $this->inferPropertyType($expr),
+            $expr instanceof Expr\StaticPropertyFetch => $expr->class instanceof Node\Name && $expr->name instanceof Node\VarLikeIdentifier
+                ? $this->propertyType($this->typeResolver->resolveName($expr->class, $this->currentScope()), $expr->name->toString())
+                : null,
+            $expr instanceof Expr\MethodCall, $expr instanceof Expr\NullsafeMethodCall => $this->containerResolution($expr)
+                ?? ($expr->name instanceof Node\Identifier ? $this->returnType($this->inferType($expr->var), $expr->name->toString()) : null),
+            $expr instanceof Expr\StaticCall => $this->containerResolution($expr)
+                ?? ($expr->class instanceof Node\Name && $expr->name instanceof Node\Identifier
+                    ? $this->returnType($this->typeResolver->resolveName($expr->class, $this->currentScope()), $expr->name->toString())
+                    : null),
+            $expr instanceof Expr\FuncCall => $this->containerResolution($expr),
+            $expr instanceof Expr\Clone_ => $this->inferType($expr->expr),
+            $expr instanceof Expr\Assign => $this->inferType($expr->expr),
+            $expr instanceof Expr\BinaryOp\Coalesce => $this->inferType($expr->left) ?? $this->inferType($expr->right),
+            $expr instanceof Expr\Ternary => ($expr->if !== null ? $this->inferType($expr->if) : null) ?? $this->inferType($expr->else),
+            default => null,
+        };
+    }
+
+    private function inferVariableType(Expr\Variable $variable): ?string
+    {
+        if (!is_string($variable->name)) {
+            return null;
+        }
+
+        if ($variable->name === 'this') {
+            return $this->currentScope()->class;
+        }
+
+        $frame = end($this->frames);
+
+        return $frame === false ? null : ($frame['locals'][$variable->name] ?? null);
+    }
+
+    private function inferPropertyType(Expr\PropertyFetch|Expr\NullsafePropertyFetch $fetch): ?string
+    {
+        if (!$fetch->name instanceof Node\Identifier) {
+            return null;
+        }
+
+        return $this->propertyType($this->inferType($fetch->var), $fetch->name->toString());
+    }
+
+    private function propertyType(?string $class, string $property): ?string
+    {
+        return $class === null ? null : $this->hierarchy->propertyType($class, $property);
+    }
+
+    private function returnType(?string $class, string $method): ?string
+    {
+        if ($class === null) {
+            return null;
+        }
+
+        $type = $this->hierarchy->methodReturnType($class, $method);
+
+        // Fluent methods declared `: static` / `: self` in a parent return the caller's class
+        $found = $this->hierarchy->findMethod($class, $method);
+        if ($found !== null && $type === $found[0]) {
+            return $class;
+        }
+
+        return $type;
+    }
+
+    /**
+     * app(Foo::class), resolve(Foo::class), app()->make(Foo::class), App::make(Foo::class)
+     */
+    private function containerResolution(Node $node): ?string
+    {
+        $isContainerCall = match (true) {
+            $node instanceof Expr\FuncCall => $node->name instanceof Node\Name
+                && in_array(strtolower($node->name->getLast()), self::CONTAINER_FUNCTIONS, true),
+            $node instanceof Expr\MethodCall => $node->name instanceof Node\Identifier
+                && in_array($node->name->toLowerString(), self::CONTAINER_METHODS, true)
+                && $node->var instanceof Expr\FuncCall
+                && $node->var->name instanceof Node\Name
+                && strtolower($node->var->name->getLast()) === 'app',
+            $node instanceof Expr\StaticCall => $node->class instanceof Node\Name
+                && $node->name instanceof Node\Identifier
+                && in_array($node->name->toLowerString(), self::CONTAINER_METHODS, true)
+                && in_array($node->class->toString(), self::CONTAINER_CLASSES, true),
+            default => false,
+        };
+
+        if (!$isContainerCall || $node->isFirstClassCallable()) {
+            return null;
+        }
+
+        $firstArg = $node->getArgs()[0]->value ?? null;
+        if (!$firstArg instanceof Expr\ClassConstFetch
+            || !$firstArg->class instanceof Node\Name
+            || !$firstArg->name instanceof Node\Identifier
+            || $firstArg->name->toLowerString() !== 'class') {
+            return null;
+        }
+
+        return $this->typeResolver->resolveName($firstArg->class, $this->currentScope());
+    }
+
+    private function addEdge(string $from, ?string $to, string $type): void
+    {
+        if ($to === null) {
+            return;
+        }
+
+        $this->edges[] = ['source' => $from, 'target' => $to, 'type' => $type];
     }
 }

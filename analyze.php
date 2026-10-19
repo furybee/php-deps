@@ -3,99 +3,107 @@
 
 declare(strict_types=1);
 
-/**
- * PHP Dependency Graph Analyzer
- *
- * Statically analyzes PHP files to extract a full call graph:
- * classes, methods, calls, instantiations, DI, and inheritance.
- *
- * Usage:
- *   php analyze.php [--dir=.] [--exclude=vendor] [--output=output/graph.json]
- *
- * Defaults:
- *   --dir=. (scans entire project, vendor/ excluded by default)
- *   --exclude=vendor,node_modules,.claude,storage,bootstrap/cache
- *   --output=output/graph.json
- */
+const USAGE = <<<TXT
+Usage: php-deps [options]
 
-$basePath = dirname(__DIR__, 1);
+  --root=PATH      Project root, scan and exclude paths are relative to it (default: current directory)
+  --dir=PATH       Directory to scan, repeatable (default: .)
+  --exclude=LIST   Comma-separated directories to skip. A bare name (vendor) matches at any depth,
+                   a path (bootstrap/cache) is relative to the root
+                   (default: vendor,node_modules,.git,.claude,storage,bootstrap/cache)
+  --output=FILE    JSON output, relative to the current directory (default: <php-deps>/output/graph.json)
+  --pretty         Pretty-print the JSON
+  --quiet          Only print errors
+  --help           Show this help
 
-// Autoload: prefer own vendor/, fallback to parent project's vendor/
-$ownAutoload = __DIR__ . '/vendor/autoload.php';
-$parentAutoload = $basePath . '/vendor/autoload.php';
+TXT;
 
-if (file_exists($ownAutoload)) {
-    require_once $ownAutoload;
-} elseif (file_exists($parentAutoload)) {
-    require_once $parentAutoload;
-    // Register our own classes when using parent autoload
-    spl_autoload_register(function (string $class) {
+$autoloadCandidates = [
+    __DIR__ . '/vendor/autoload.php',
+    __DIR__ . '/../../autoload.php',
+    getcwd() . '/vendor/autoload.php',
+];
+
+$autoload = array_values(array_filter($autoloadCandidates, 'file_exists'))[0] ?? null;
+if ($autoload === null) {
+    fwrite(STDERR, "Error: no vendor/autoload.php found. Run: composer install (in " . __DIR__ . ")\n");
+    exit(1);
+}
+require_once $autoload;
+
+if (!class_exists(DepsGraph\Analyzer::class)) {
+    spl_autoload_register(static function (string $class): void {
         $prefix = 'DepsGraph\\';
         if (str_starts_with($class, $prefix)) {
-            $relative = str_replace('\\', '/', substr($class, strlen($prefix)));
-            $file = __DIR__ . '/src/' . $relative . '.php';
+            $file = __DIR__ . '/src/' . str_replace('\\', '/', substr($class, strlen($prefix))) . '.php';
             if (file_exists($file)) {
                 require_once $file;
             }
         }
     });
-} else {
-    fwrite(STDERR, "Error: No vendor/autoload.php found.\n");
-    fwrite(STDERR, "Run: composer install (in " . __DIR__ . ")\n");
+}
+
+$options = getopt('', ['root:', 'dir:', 'exclude:', 'output:', 'pretty', 'quiet', 'help']);
+
+if (isset($options['help'])) {
+    fwrite(STDOUT, USAGE);
+    exit(0);
+}
+
+$toAbsolute = static fn(string $path, string $base): string => str_starts_with($path, '/') ? $path : $base . '/' . $path;
+
+$cwd = (string) getcwd();
+$root = rtrim($toAbsolute($options['root'] ?? '.', $cwd), '/');
+$root = realpath($root) ?: $root;
+$scanDirs = (array) ($options['dir'] ?? ['.']);
+$excludeDirs = isset($options['exclude'])
+    ? array_filter(array_map('trim', explode(',', (string) $options['exclude'])))
+    : ['vendor', 'node_modules', '.git', '.claude', 'storage', 'bootstrap/cache'];
+$outputFile = $toAbsolute($options['output'] ?? __DIR__ . '/output/graph.json', $cwd);
+$isQuiet = isset($options['quiet']);
+
+if (!is_dir($root)) {
+    fwrite(STDERR, "Error: root directory not found: {$root}\n");
     exit(1);
 }
 
-// Parse CLI arguments
-$scanDirs = [];
-$excludeDirs = null;
-$outputFile = __DIR__ . '/output/graph.json';
-
-foreach ($argv as $i => $arg) {
-    if ($i === 0) continue;
-    if (str_starts_with($arg, '--dir=')) {
-        $scanDirs[] = substr($arg, 6);
-    } elseif (str_starts_with($arg, '--exclude=')) {
-        $excludeDirs = array_map('trim', explode(',', substr($arg, 10)));
-    } elseif (str_starts_with($arg, '--output=')) {
-        $outputFile = substr($arg, 9);
-        if (!str_starts_with($outputFile, '/')) {
-            $outputFile = $basePath . '/' . $outputFile;
-        }
+$log = static function (string $message) use ($isQuiet): void {
+    if (!$isQuiet) {
+        fwrite(STDERR, $message . "\n");
     }
-}
+};
 
-// Defaults
-if (empty($scanDirs)) {
-    $scanDirs = ['.'];
-}
-if ($excludeDirs === null) {
-    $excludeDirs = ['vendor', 'node_modules', '.claude', 'storage', 'bootstrap/cache'];
-}
-
-$dirsLabel = implode(', ', array_map(fn($d) => $d === '.' ? '.' : "{$d}/", $scanDirs));
-$excludeLabel = empty($excludeDirs) ? '(none)' : implode(', ', $excludeDirs);
-
-fwrite(STDERR, "=== PHP Dependency Graph Analyzer ===\n\n");
-fwrite(STDERR, "Base path: {$basePath}\n");
-fwrite(STDERR, "Scan:      {$dirsLabel}\n");
-fwrite(STDERR, "Exclude:   {$excludeLabel}\n");
-fwrite(STDERR, "Output:    {$outputFile}\n\n");
+$log("=== PHP Dependency Graph Analyzer ===\n");
+$log("Root:    {$root}");
+$log("Scan:    " . implode(', ', $scanDirs));
+$log("Exclude: " . (empty($excludeDirs) ? '(none)' : implode(', ', $excludeDirs)));
+$log("Output:  {$outputFile}\n");
 
 $startTime = microtime(true);
-
-$analyzer = new DepsGraph\Analyzer($basePath, $scanDirs, $excludeDirs);
-$graph = $analyzer->analyze();
-
+$graph = (new DepsGraph\Analyzer($root, $scanDirs, $excludeDirs, $log(...)))->analyze();
 $elapsed = round(microtime(true) - $startTime, 2);
-$json = json_encode($graph, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 
-// Ensure output directory exists
-$outputDir = dirname($outputFile);
-if (!is_dir($outputDir)) {
-    mkdir($outputDir, 0755, true);
+$log("\nStats:");
+$log("  Classes: {$graph['stats']['totalClasses']}");
+$log("  Methods: {$graph['stats']['totalMethods']}");
+$log("  Edges:   {$graph['stats']['totalEdges']}");
+foreach ($graph['stats']['edgeTypeCounts'] as $type => $count) {
+    $log("    {$type}: {$count}");
+}
+$log("  Layers:");
+foreach ($graph['stats']['layerCounts'] as $layer => $count) {
+    $log("    {$layer}: {$count}");
 }
 
+$flags = JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR;
+$json = json_encode($graph, isset($options['pretty']) ? $flags | JSON_PRETTY_PRINT : $flags);
+
+$outputDir = dirname($outputFile);
+if (!is_dir($outputDir) && !mkdir($outputDir, 0755, true) && !is_dir($outputDir)) {
+    fwrite(STDERR, "Error: cannot create {$outputDir}\n");
+    exit(1);
+}
 file_put_contents($outputFile, $json);
 
 $sizeMb = round(strlen($json) / 1024 / 1024, 2);
-fwrite(STDERR, "\nDone in {$elapsed}s. Output: {$outputFile} ({$sizeMb} MB)\n");
+$log("\nDone in {$elapsed}s. Output: {$outputFile} ({$sizeMb} MB)");

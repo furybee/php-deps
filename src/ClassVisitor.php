@@ -8,204 +8,162 @@ use PhpParser\Node;
 use PhpParser\NodeVisitorAbstract;
 
 /**
- * First pass: extracts class metadata, methods, properties, use statements, and DI.
+ * First pass: extracts class metadata, methods, properties and DI.
+ * Expects PhpParser's NameResolver to run before it in the same traverser.
  */
 final class ClassVisitor extends NodeVisitorAbstract
 {
-    /** @var array<string, array> Collected class data keyed by FQCN */
+    /** @var array<string, array<string, mixed>> keyed by FQCN */
     private array $classes = [];
 
-    /** @var array<string, string> alias => FQCN */
-    private array $useMap = [];
+    /** @var ClassScope[] */
+    private array $scopes = [];
 
-    private string $currentNamespace = '';
-    private ?string $currentClass = null;
-
-    private TypeResolver $typeResolver;
-
-    public function __construct(TypeResolver $typeResolver)
+    public function __construct(private readonly TypeResolver $typeResolver)
     {
-        $this->typeResolver = $typeResolver;
     }
 
+    /**
+     * @return array<string, array<string, mixed>>
+     */
     public function getClasses(): array
     {
         return $this->classes;
     }
 
-    public function getUseMap(): array
+    public function beforeTraverse(array $nodes): ?array
     {
-        return $this->useMap;
-    }
+        $this->classes = [];
+        $this->scopes = [];
 
-    public function getCurrentNamespace(): string
-    {
-        return $this->currentNamespace;
-    }
-
-    public function reset(): void
-    {
-        $this->useMap = [];
-        $this->currentNamespace = '';
-        $this->currentClass = null;
+        return null;
     }
 
     public function enterNode(Node $node): ?int
     {
-        if ($node instanceof Node\Stmt\Namespace_) {
-            $this->currentNamespace = $node->name ? $node->name->toString() : '';
+        if ($node instanceof Node\Stmt\ClassLike) {
+            $this->enterClassLike($node);
             return null;
         }
 
-        if ($node instanceof Node\Stmt\Use_) {
-            foreach ($node->uses as $use) {
-                $fqcn = $use->name->toString();
-                $alias = $use->getAlias()->toString();
-                $this->useMap[$alias] = $fqcn;
-            }
+        $scope = end($this->scopes);
+        if ($scope === false || $scope->isAnonymous()) {
             return null;
         }
 
-        if ($node instanceof Node\Stmt\GroupUse) {
-            $prefix = $node->prefix->toString();
-            foreach ($node->uses as $use) {
-                $fqcn = $prefix . '\\' . $use->name->toString();
-                $alias = $use->getAlias()->toString();
-                $this->useMap[$alias] = $fqcn;
-            }
-            return null;
-        }
+        match (true) {
+            $node instanceof Node\Stmt\TraitUse => $this->addTraits($node, $scope),
+            $node instanceof Node\Stmt\Property => $this->addProperty($node, $scope),
+            $node instanceof Node\Stmt\ClassMethod => $this->addMethod($node, $scope),
+            default => null,
+        };
 
-        if ($node instanceof Node\Stmt\Class_ || $node instanceof Node\Stmt\Interface_ || $node instanceof Node\Stmt\Trait_ || $node instanceof Node\Stmt\Enum_) {
-            if ($node->name === null) {
-                return null; // anonymous class
-            }
+        return null;
+    }
 
-            $name = $node->name->toString();
-            $fqcn = $this->currentNamespace ? $this->currentNamespace . '\\' . $name : $name;
-            $this->currentClass = $fqcn;
-
-            $this->typeResolver->setNamespace($this->currentNamespace);
-            $this->typeResolver->setUseMap($this->useMap);
-
-            $classData = [
-                'fqcn' => $fqcn,
-                'name' => $name,
-                'namespace' => $this->currentNamespace,
-                'type' => match (true) {
-                    $node instanceof Node\Stmt\Interface_ => 'interface',
-                    $node instanceof Node\Stmt\Trait_ => 'trait',
-                    $node instanceof Node\Stmt\Enum_ => 'enum',
-                    $node instanceof Node\Stmt\Class_ && $node->isAbstract() => 'abstract',
-                    default => 'class',
-                },
-                'layer' => TypeResolver::detectLayer($fqcn),
-                'methods' => [],
-                'properties' => [],
-                'extends' => null,
-                'implements' => [],
-                'traits' => [],
-                'constructorParams' => [],
-            ];
-
-            // Parent class
-            if ($node instanceof Node\Stmt\Class_ && $node->extends) {
-                $classData['extends'] = $this->typeResolver->resolve($node->extends->toString());
-            }
-
-            // Interfaces
-            if (($node instanceof Node\Stmt\Class_ || $node instanceof Node\Stmt\Enum_) && !empty($node->implements)) {
-                foreach ($node->implements as $impl) {
-                    $resolved = $this->typeResolver->resolve($impl->toString());
-                    if ($resolved) {
-                        $classData['implements'][] = $resolved;
-                    }
-                }
-            }
-
-            $this->classes[$fqcn] = $classData;
-            return null;
-        }
-
-        if ($this->currentClass === null) {
-            return null;
-        }
-
-        // Trait uses
-        if ($node instanceof Node\Stmt\TraitUse) {
-            foreach ($node->traits as $trait) {
-                $resolved = $this->typeResolver->resolve($trait->toString());
-                if ($resolved) {
-                    $this->classes[$this->currentClass]['traits'][] = $resolved;
-                }
-            }
-            return null;
-        }
-
-        // Properties
-        if ($node instanceof Node\Stmt\Property) {
-            foreach ($node->props as $prop) {
-                $propName = $prop->name->toString();
-                $type = $this->typeResolver->resolveTypeNode($node->type);
-                if ($type) {
-                    $this->classes[$this->currentClass]['properties'][$propName] = $type;
-                }
-            }
-            return null;
-        }
-
-        // Methods
-        if ($node instanceof Node\Stmt\ClassMethod) {
-            $methodName = $node->name->toString();
-            $visibility = 'public';
-            if ($node->isProtected()) $visibility = 'protected';
-            if ($node->isPrivate()) $visibility = 'private';
-
-            $params = [];
-            foreach ($node->params as $param) {
-                $paramName = '$' . $param->var->name;
-                $paramType = $this->typeResolver->resolveTypeNode($param->type);
-                $params[$paramName] = $paramType;
-
-                // Constructor promotion (public/protected/private params)
-                if ($methodName === '__construct' && ($param->flags & Node\Stmt\Class_::MODIFIER_PUBLIC || $param->flags & Node\Stmt\Class_::MODIFIER_PROTECTED || $param->flags & Node\Stmt\Class_::MODIFIER_PRIVATE)) {
-                    if ($paramType) {
-                        $this->classes[$this->currentClass]['properties'][$param->var->name] = $paramType;
-                    }
-                }
-            }
-
-            // Track constructor injections separately
-            if ($methodName === '__construct') {
-                $this->classes[$this->currentClass]['constructorParams'] = $params;
-                $injections = [];
-                foreach ($params as $pName => $pType) {
-                    if ($pType !== null) {
-                        $injections[ltrim($pName, '$')] = $pType;
-                    }
-                }
-                $this->typeResolver->registerConstructorInjections($this->currentClass, $injections);
-            }
-
-            $returnType = $this->typeResolver->resolveTypeNode($node->returnType);
-
-            $this->classes[$this->currentClass]['methods'][$methodName] = [
-                'visibility' => $visibility,
-                'params' => $params,
-                'returnType' => $returnType,
-                'static' => $node->isStatic(),
-                'line' => $node->getStartLine(),
-            ];
-            return null;
+    public function leaveNode(Node $node): ?int
+    {
+        if ($node instanceof Node\Stmt\ClassLike) {
+            array_pop($this->scopes);
         }
 
         return null;
     }
 
-    public function leaveNode(Node $node): void
+    private function enterClassLike(Node\Stmt\ClassLike $node): void
     {
-        if ($node instanceof Node\Stmt\Class_ || $node instanceof Node\Stmt\Interface_ || $node instanceof Node\Stmt\Trait_ || $node instanceof Node\Stmt\Enum_) {
-            $this->currentClass = null;
+        if ($node->namespacedName === null) {
+            $this->scopes[] = ClassScope::anonymous();
+            return;
         }
+
+        $fqcn = $node->namespacedName->toString();
+        $parents = match (true) {
+            $node instanceof Node\Stmt\Class_ && $node->extends !== null => [$node->extends->toString()],
+            $node instanceof Node\Stmt\Interface_ => array_map(fn(Node\Name $n) => $n->toString(), $node->extends),
+            default => [],
+        };
+        $implements = $node instanceof Node\Stmt\Class_ || $node instanceof Node\Stmt\Enum_
+            ? array_map(fn(Node\Name $n) => $n->toString(), $node->implements)
+            : [];
+
+        $this->scopes[] = new ClassScope($fqcn, $node instanceof Node\Stmt\Class_ ? ($parents[0] ?? null) : null);
+
+        $namespace = $node->namespacedName->slice(0, -1)?->toString() ?? '';
+
+        $this->classes[$fqcn] = [
+            'fqcn' => $fqcn,
+            'name' => $node->name?->toString() ?? $fqcn,
+            'namespace' => $namespace,
+            'type' => match (true) {
+                $node instanceof Node\Stmt\Interface_ => 'interface',
+                $node instanceof Node\Stmt\Trait_ => 'trait',
+                $node instanceof Node\Stmt\Enum_ => 'enum',
+                $node instanceof Node\Stmt\Class_ && $node->isAbstract() => 'abstract',
+                default => 'class',
+            },
+            'layer' => LayerDetector::detect($fqcn),
+            'line' => $node->getStartLine(),
+            'methods' => [],
+            'properties' => [],
+            'extends' => $parents,
+            'implements' => $implements,
+            'traits' => [],
+            'constructorParams' => [],
+        ];
+    }
+
+    private function addTraits(Node\Stmt\TraitUse $node, ClassScope $scope): void
+    {
+        foreach ($node->traits as $trait) {
+            $this->classes[$scope->class]['traits'][] = $trait->toString();
+        }
+    }
+
+    private function addProperty(Node\Stmt\Property $node, ClassScope $scope): void
+    {
+        foreach ($node->props as $prop) {
+            $type = $this->typeResolver->resolveTypeNode($node->type, $scope)
+                ?? $this->typeResolver->resolveDocTag($node->getDocComment(), 'var', null, $scope);
+
+            if ($type !== null) {
+                $this->classes[$scope->class]['properties'][$prop->name->toString()] = $type;
+            }
+        }
+    }
+
+    private function addMethod(Node\Stmt\ClassMethod $node, ClassScope $scope): void
+    {
+        $methodName = $node->name->toString();
+        $doc = $node->getDocComment();
+
+        $params = [];
+        foreach ($node->params as $param) {
+            if (!$param->var instanceof Node\Expr\Variable || !is_string($param->var->name)) {
+                continue;
+            }
+
+            $paramName = $param->var->name;
+            $paramType = $this->typeResolver->resolveTypeNode($param->type, $scope)
+                ?? $this->typeResolver->resolveDocTag($doc, 'param', $paramName, $scope);
+            $params[$paramName] = $paramType;
+
+            if ($param->isPromoted() && $paramType !== null) {
+                $this->classes[$scope->class]['properties'][$paramName] = $paramType;
+            }
+        }
+
+        if (strtolower($methodName) === '__construct') {
+            $this->classes[$scope->class]['constructorParams'] = $params;
+        }
+
+        $this->classes[$scope->class]['methods'][$methodName] = [
+            'visibility' => $node->isPrivate() ? 'private' : ($node->isProtected() ? 'protected' : 'public'),
+            'params' => $params,
+            'returnType' => $this->typeResolver->resolveTypeNode($node->returnType, $scope)
+                ?? $this->typeResolver->resolveDocTag($doc, 'return', null, $scope),
+            'static' => $node->isStatic(),
+            'line' => $node->getStartLine(),
+        ];
     }
 }

@@ -24,7 +24,7 @@
 - **Layer detection** — auto-categorizes classes (Controller, Service, Model, Job, Action, etc.)
 - **Force-directed layout** — ForceAtlas2 algorithm for natural clustering
 - **Search & filter** — find classes instantly, filter by layer or edge type
-- **Zero dependencies viewer** — single HTML file, loads via CDN, works offline with file picker
+- **No build step viewer** — static HTML, libraries loaded from a CDN, works from `file://` with a file picker
 - **Laravel optimized** — understands Laravel patterns (service injection, `app()` helper, Form Requests)
 
 ## Requirements
@@ -47,12 +47,14 @@ composer install
 
 ### 2. Run the analyzer
 
+From the root of the project to analyze:
+
 ```bash
-php analyze.php
+php path/to/php-deps/analyze.php --dir=app
 ```
 
-By default, it scans the entire project (`.`) and outputs to `output/graph.json`.
-Directories like `vendor/`, `node_modules/`, `storage/` are excluded automatically.
+By default it scans the current directory (`.`) and writes `output/graph.json` inside php-deps.
+`vendor/`, `node_modules/`, `.git/`, `storage/` are excluded automatically, at any depth.
 
 ### 3. Open the viewer
 
@@ -67,29 +69,26 @@ Load `output/graph.json` via the file picker (drag & drop supported).
 ## CLI Options
 
 ```bash
-php analyze.php [--dir=app] [--dir=app-modules] [--exclude=vendor] [--output=output/graph.json]
+php analyze.php [--root=.] [--dir=app] [--dir=app-modules] [--exclude=vendor,tests/Fixtures] [--output=graph.json] [--pretty] [--quiet]
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--dir` | `.` (entire project) | Directories to scan (repeatable, relative to project root) |
-| `--exclude` | `vendor,node_modules,.claude,storage,bootstrap/cache` | Comma-separated directories to exclude |
-| `--output` | `output/graph.json` | Output path for the JSON graph |
+| `--root` | current directory | Project root; `--dir` and path excludes are relative to it |
+| `--dir` | `.` | Directory to scan, repeatable |
+| `--exclude` | `vendor,node_modules,.git,.claude,storage,bootstrap/cache` | Comma-separated. A bare name (`vendor`) matches a directory at any depth, a path (`bootstrap/cache`) is relative to the root |
+| `--output` | `<php-deps>/output/graph.json` | JSON output, relative to the current directory |
+| `--pretty` | off | Pretty-print the JSON (about twice as big) |
+| `--quiet` | off | Only print errors |
 
 ### Examples
 
 ```bash
-# Scan the entire project (vendor/ excluded by default)
-php analyze.php --dir=.
-
-# Scan multiple directories
+# Laravel app + modules
 php analyze.php --dir=app --dir=app-modules
 
-# Scan with custom exclusions
-php analyze.php --dir=. --exclude=vendor,node_modules,tests
-
-# Custom output path
-php analyze.php --output=/tmp/graph.json
+# Analyze another project without leaving php-deps
+php analyze.php --root=../my-project --dir=src --output=output/my-project.json
 ```
 
 ## What It Detects
@@ -113,9 +112,26 @@ php analyze.php --output=/tmp/graph.json
 | `implements` | `class Foo implements Bar` | Interface implementation |
 | `uses_trait` | `use SoftDeletes` | Trait usage |
 
+Only classes found in the scanned directories become nodes: edges towards vendor or PHP
+built-in classes are dropped. A call to a method that is inherited (parent class, trait,
+interface) points to the class that declares it; a call to a method that is declared nowhere
+in the scanned code (Eloquent `User::query()`, `__call` magic, vendor parent) points to the
+class node itself.
+
+### Type inference
+
+The receiver of a call is resolved from: native types, PHPDoc (`@var`, `@param`, `@return`,
+inline `/** @var Foo $foo */`), constructor promotion, inherited properties, method return types
+(including fluent `static`), `new`, `clone`, `??`, ternaries, `instanceof` checks, typed closure
+parameters, nullsafe calls and container calls (`app(Foo::class)`, `resolve()`, `app()->make()`,
+`App::make()`).
+
 ### Layer Auto-Detection
 
-Classes are categorized by namespace:
+Classes are categorized by namespace, in this order: a known layer segment, deepest first
+(`Modules\Billing\Application\Actions\Pay` → Action), a Clean Architecture layer
+(Domain, Application, Infrastructure, Presentation), the class name suffix
+(`PdfRenderService` → Service), then the first meaningful namespace segment.
 
 | Layer | Namespace Pattern |
 |-------|------------------|
@@ -126,7 +142,7 @@ Classes are categorized by namespace:
 | Job | `\Jobs\` |
 | Event | `\Events\` |
 | Listener | `\Listeners\` |
-| Repository | `\Repository\` |
+| Repository | `\Repositories\` |
 | Command | `\Console\` |
 | DTO | `\Dtos\` |
 | ... | and 12 more |
@@ -157,8 +173,11 @@ php-deps/
 │   ├── Analyzer.php         # Orchestrator: scans files, runs 2-pass analysis
 │   ├── ClassVisitor.php     # Pass 1: extracts classes, methods, properties, DI
 │   ├── CallVisitor.php      # Pass 2: extracts method calls, instantiations
-│   ├── TypeResolver.php     # Resolves types from use statements, type hints
+│   ├── TypeResolver.php     # Resolves type hints and PHPDoc types to FQCNs
+│   ├── ClassHierarchy.php   # Member lookups through parents, traits, interfaces
+│   ├── LayerDetector.php    # Infers the architectural layer of a class
 │   └── GraphBuilder.php     # Builds the final JSON graph (nodes + edges)
+├── tests/                   # PHPUnit tests and fixture projects
 ├── viewer/
 │   ├── index.html           # Standalone viewer (works with file://)
 │   ├── app.js               # Sigma.js v2 + Graphology + ForceAtlas2
@@ -176,6 +195,13 @@ php-deps/
 3. **JSON export**: Builds a graph with nodes (classes + methods) and edges (calls, dependencies, inheritance), then exports as JSON.
 
 4. **Viewer**: Loads the JSON into a Graphology graph and renders it with Sigma.js v2 (WebGL). ForceAtlas2 computes the layout in real-time.
+
+## Development
+
+```bash
+composer install
+composer test
+```
 
 ## Performance
 

@@ -114,7 +114,7 @@
         ">Choose file</button>
         <input type="file" id="file-input" accept=".json" style="display:none">
         <div style="margin-top: 20px; font-size: 11px; color: #484f58;">
-          Generate it with: <code style="background:#21262d;padding:2px 6px;border-radius:4px;color:#8b949e;">php scripts/deps-graph/analyze.php</code>
+          Generate it with: <code style="background:#21262d;padding:2px 6px;border-radius:4px;color:#8b949e;">php analyze.php</code>
         </div>
       </div>
     `;
@@ -427,6 +427,8 @@
         classType: node.classType || "",
         methods: node.methods || [],
         methodCount: node.methodCount || 0,
+        file: node.file || "",
+        line: node.line || 0,
         forceLabel: false,
       });
     });
@@ -973,7 +975,8 @@
     const color = LAYER_COLORS[attrs.layer] || LAYER_COLORS.Other;
 
     tooltip.querySelector(".tooltip-title").textContent = attrs.label;
-    tooltip.querySelector(".tooltip-namespace").textContent = attrs.namespace || nodeId;
+    const location = attrs.file ? ` — ${attrs.file}:${attrs.line}` : "";
+    tooltip.querySelector(".tooltip-namespace").textContent = (attrs.namespace || nodeId) + location;
 
     const layerEl = tooltip.querySelector(".tooltip-layer");
 

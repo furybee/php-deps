@@ -4,198 +4,137 @@ declare(strict_types=1);
 
 namespace DepsGraph;
 
-use PhpParser\NodeTraverser;
-use PhpParser\ParserFactory;
 use PhpParser\ErrorHandler;
+use PhpParser\NodeTraverser;
+use PhpParser\NodeVisitor\NameResolver;
+use PhpParser\NodeVisitorAbstract;
+use PhpParser\Parser;
+use PhpParser\ParserFactory;
 
 final class Analyzer
 {
-    private string $basePath;
-    /** @var string[] */
-    private array $scanDirs;
-    /** @var string[] */
-    private array $excludeDirs;
-    private \PhpParser\Parser $parser;
-    private TypeResolver $typeResolver;
-
-    /** @var array<string, array> class data from first pass */
-    private array $classMap = [];
-
-    /** @var array<string, array{namespace: string, useMap: array}> file context from first pass */
-    private array $fileContexts = [];
+    private readonly string $basePath;
+    private readonly Parser $parser;
+    private readonly NameResolver $nameResolver;
+    private readonly TypeResolver $typeResolver;
+    private readonly \Closure $log;
 
     /**
-     * @param string|string[] $scanDirs
-     * @param string[] $excludeDirs
+     * @param string[] $scanDirs relative to $basePath, or absolute
+     * @param string[] $excludeDirs a bare name (`vendor`) excludes every directory with that name,
+     *                              a path (`bootstrap/cache`) is relative to $basePath
      */
-    public function __construct(string $basePath, string|array $scanDirs = ['app'], array $excludeDirs = [])
-    {
+    public function __construct(
+        string $basePath,
+        private readonly array $scanDirs = ['.'],
+        private readonly array $excludeDirs = [],
+        ?\Closure $log = null,
+    ) {
         $this->basePath = rtrim($basePath, '/');
-        $this->scanDirs = is_array($scanDirs) ? $scanDirs : [$scanDirs];
-        $this->excludeDirs = $excludeDirs;
         $this->parser = (new ParserFactory())->createForHostVersion();
-        $this->typeResolver = new TypeResolver();
+        $this->nameResolver = new NameResolver();
+        $this->typeResolver = new TypeResolver($this->nameResolver->getNameContext());
+        $this->log = $log ?? static function (string $message): void {
+        };
     }
 
     /**
-     * Run the full analysis and return the graph data.
+     * @return array{nodes: array<mixed>, edges: array<mixed>, stats: array<string, mixed>}
      */
     public function analyze(): array
     {
         $files = $this->findPhpFiles();
-        $totalFiles = count($files);
+        ($this->log)("Found " . count($files) . " PHP files");
 
-        fwrite(STDERR, "Found {$totalFiles} PHP files\n");
+        ($this->log)("Pass 1/2: Extracting classes and methods...");
+        $classMap = $this->extractClasses($files);
+        ($this->log)("  Found " . count($classMap) . " classes/interfaces/traits/enums");
 
-        // First pass: extract class metadata
-        fwrite(STDERR, "Pass 1/2: Extracting classes and methods...\n");
-        $this->firstPass($files);
-        fwrite(STDERR, "  Found " . count($this->classMap) . " classes/interfaces/traits/enums\n");
+        $hierarchy = new ClassHierarchy($classMap);
 
-        // Second pass: extract call relationships
-        fwrite(STDERR, "Pass 2/2: Extracting call graph...\n");
-        $edges = $this->secondPass($files);
-        fwrite(STDERR, "  Found " . count($edges) . " call edges\n");
+        ($this->log)("Pass 2/2: Extracting call graph...");
+        $callVisitor = new CallVisitor($this->typeResolver, $hierarchy);
+        $this->traverseFiles($files, $callVisitor, static fn() => null);
+        ($this->log)("  Found " . count($callVisitor->getEdges()) . " raw call edges");
 
-        // Build final graph
-        $builder = new GraphBuilder();
-        $graph = $builder->build($this->classMap, $edges);
-
-        fwrite(STDERR, "\nStats:\n");
-        fwrite(STDERR, "  Classes: {$graph['stats']['totalClasses']}\n");
-        fwrite(STDERR, "  Methods: {$graph['stats']['totalMethods']}\n");
-        fwrite(STDERR, "  Edges:   {$graph['stats']['totalEdges']}\n");
-        fwrite(STDERR, "  Layers:\n");
-        foreach ($graph['stats']['layerCounts'] as $layer => $count) {
-            fwrite(STDERR, "    {$layer}: {$count}\n");
-        }
-
-        return $graph;
+        return (new GraphBuilder())->build($classMap, $callVisitor->getEdges(), $hierarchy);
     }
 
-    private function firstPass(array $files): void
+    /**
+     * @param string[] $files
+     * @return array<string, array<string, mixed>>
+     */
+    private function extractClasses(array $files): array
     {
-        $errorHandler = new ErrorHandler\Collecting();
-        $processed = 0;
-        $totalFiles = count($files);
+        $classMap = [];
+        $classVisitor = new ClassVisitor($this->typeResolver);
 
-        foreach ($files as $file) {
-            $code = file_get_contents($file);
-            $errorHandler->clearErrors();
-
-            try {
-                $ast = $this->parser->parse($code, $errorHandler);
-            } catch (\Throwable $e) {
-                fwrite(STDERR, "  [WARN] Parse error in {$file}: {$e->getMessage()}\n");
-                continue;
+        $this->traverseFiles($files, $classVisitor, function (string $file) use ($classVisitor, &$classMap): void {
+            $relativePath = $this->relativePath($file);
+            foreach ($classVisitor->getClasses() as $fqcn => $data) {
+                if (isset($classMap[$fqcn])) {
+                    ($this->log)("  [WARN] {$fqcn} declared in both {$classMap[$fqcn]['file']} and {$relativePath}, keeping the first");
+                    continue;
+                }
+                $classMap[$fqcn] = $data + ['file' => $relativePath];
             }
+        });
 
-            if ($ast === null) {
-                continue;
-            }
-
-            $visitor = new ClassVisitor($this->typeResolver);
-            $traverser = new NodeTraverser();
-            $traverser->addVisitor($visitor);
-            $traverser->traverse($ast);
-
-            $classes = $visitor->getClasses();
-            $relPath = $this->relativePath($file);
-
-            foreach ($classes as $fqcn => &$data) {
-                $data['file'] = $relPath;
-            }
-            unset($data);
-
-            $this->classMap = array_merge($this->classMap, $classes);
-            $this->fileContexts[$file] = [
-                'namespace' => $visitor->getCurrentNamespace(),
-                'useMap' => $visitor->getUseMap(),
-            ];
-
-            $processed++;
-            if ($processed % 200 === 0) {
-                fwrite(STDERR, "  Processed {$processed}/{$totalFiles} files...\n");
-            }
-        }
+        return $classMap;
     }
 
-    private function secondPass(array $files): array
+    /**
+     * @param string[] $files
+     * @param \Closure(string): void $afterFile
+     */
+    private function traverseFiles(array $files, NodeVisitorAbstract $visitor, \Closure $afterFile): void
     {
+        // Visitors inspect child nodes ahead of the traversal, so names must all be resolved beforehand.
+        // The second NameResolver only keeps the name context current for PHPDoc types.
+        $nameResolution = new NodeTraverser(new NameResolver());
+        $traverser = new NodeTraverser($this->nameResolver, $visitor);
         $errorHandler = new ErrorHandler\Collecting();
-        $allEdges = [];
-        $processed = 0;
 
-        $callVisitor = new CallVisitor($this->typeResolver, $this->classMap);
-
-        foreach ($files as $file) {
-            if (!isset($this->fileContexts[$file])) {
-                continue;
-            }
-
-            $code = file_get_contents($file);
+        foreach ($files as $index => $file) {
             $errorHandler->clearErrors();
+            $ast = $this->parser->parse((string) file_get_contents($file), $errorHandler);
 
-            try {
-                $ast = $this->parser->parse($code, $errorHandler);
-            } catch (\Throwable $e) {
-                continue;
+            if ($errorHandler->hasErrors()) {
+                ($this->log)("  [WARN] Parse errors in {$this->relativePath($file)}: {$errorHandler->getErrors()[0]->getMessage()}");
             }
 
-            if ($ast === null) {
-                continue;
+            if ($ast !== null) {
+                $traverser->traverse($nameResolution->traverse($ast));
+                $afterFile($file);
             }
 
-            $ctx = $this->fileContexts[$file];
-            $callVisitor->setContext($ctx['namespace'], $ctx['useMap']);
-
-            $traverser = new NodeTraverser();
-            $traverser->addVisitor($callVisitor);
-            $traverser->traverse($ast);
-
-            $processed++;
-            if ($processed % 200 === 0) {
-                fwrite(STDERR, "  Processed {$processed}/" . count($files) . " files...\n");
+            if (($index + 1) % 500 === 0) {
+                ($this->log)("  Processed " . ($index + 1) . "/" . count($files) . " files...");
             }
         }
-
-        return $callVisitor->getEdges();
     }
 
+    /**
+     * @return string[]
+     */
     private function findPhpFiles(): array
     {
         $files = [];
-        $excludeAbsolute = array_map(
-            fn(string $d) => $this->basePath . '/' . trim($d, '/'),
-            $this->excludeDirs
-        );
 
         foreach ($this->scanDirs as $scanDir) {
-            $dir = $scanDir === '.'
-                ? $this->basePath
-                : $this->basePath . '/' . $scanDir;
+            $dir = str_starts_with($scanDir, '/') ? rtrim($scanDir, '/') : $this->basePath . '/' . trim($scanDir, '/');
+            $dir = rtrim(str_replace('/./', '/', $dir . '/'), '/');
 
             if (!is_dir($dir)) {
-                fwrite(STDERR, "  [WARN] Directory not found: {$dir}\n");
+                ($this->log)("  [WARN] Directory not found: {$dir}");
                 continue;
             }
 
             $iterator = new \RecursiveIteratorIterator(
                 new \RecursiveCallbackFilterIterator(
                     new \RecursiveDirectoryIterator($dir, \FilesystemIterator::SKIP_DOTS),
-                    function (\SplFileInfo $current, string $key, \RecursiveDirectoryIterator $it) use ($excludeAbsolute) {
-                        if ($current->isDir()) {
-                            $path = $current->getPathname();
-                            foreach ($excludeAbsolute as $excluded) {
-                                if ($path === $excluded || str_starts_with($path, $excluded . '/')) {
-                                    return false;
-                                }
-                            }
-                        }
-                        return true;
-                    }
+                    fn(\SplFileInfo $current) => !$current->isDir() || !$this->isExcluded($current),
                 ),
-                \RecursiveIteratorIterator::LEAVES_ONLY
             );
 
             foreach ($iterator as $file) {
@@ -205,15 +144,36 @@ final class Analyzer
             }
         }
 
+        $files = array_values(array_unique($files));
         sort($files);
-        return array_unique($files);
+
+        return $files;
+    }
+
+    private function isExcluded(\SplFileInfo $directory): bool
+    {
+        $relativePath = $this->relativePath($directory->getPathname());
+
+        foreach ($this->excludeDirs as $excluded) {
+            $excluded = trim($excluded, '/');
+            $isBareName = !str_contains($excluded, '/');
+
+            if ($isBareName && $directory->getFilename() === $excluded) {
+                return true;
+            }
+
+            if ($relativePath === $excluded || str_starts_with($relativePath, $excluded . '/')) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function relativePath(string $path): string
     {
-        if (str_starts_with($path, $this->basePath . '/')) {
-            return substr($path, strlen($this->basePath) + 1);
-        }
-        return $path;
+        return str_starts_with($path, $this->basePath . '/')
+            ? substr($path, strlen($this->basePath) + 1)
+            : $path;
     }
 }
